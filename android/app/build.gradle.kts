@@ -20,6 +20,8 @@ android {
         externalNativeBuild {
             cmake {
                 arguments += "-DENGINE_DIR=${rootDir}/../work/build/android-arm64"
+                // NDK r27 still links with 4 KB segment alignment unless asked.
+                arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
             }
         }
     }
