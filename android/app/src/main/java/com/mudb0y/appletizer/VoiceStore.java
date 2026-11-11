@@ -104,18 +104,28 @@ final class VoiceStore {
         }
         build = b;
         List<String> langs = new ArrayList<>();
+        String[] listed;
         try {
-            for (String line : readAsset("voices/index.txt").split("\n"))
-                if (!line.trim().isEmpty()) langs.add(line.trim());
+            listed = readAsset("voices/index.txt").split("\n");
             JSONArray a = new JSONObject(readAsset("premium-voices.json")).getJSONArray("voices");
             for (int i = 0; i < a.length(); i++) {
                 Pack p = new Pack(a.getJSONObject(i));
                 packs.put(p.language, p);
             }
-            for (String l : langs)
-                names.put(l, brokerTag(readAsset("voices/" + l + "/broker.hdr"), "voice"));
         } catch (IOException | JSONException e) {
             throw new IllegalStateException("APK assets are incomplete", e);
+        }
+        // The TTS service builds this store, so one broken language must not
+        // take every other voice down with it.
+        for (String line : listed) {
+            String l = line.trim();
+            if (l.isEmpty()) continue;
+            try {
+                names.put(l, brokerTag(readAsset("voices/" + l + "/broker.hdr"), "voice"));
+                langs.add(l);
+            } catch (IOException e) {
+                android.util.Log.w("Appletizer", "skipping language " + l, e);
+            }
         }
         Collections.sort(langs);
         languages = Collections.unmodifiableList(langs);

@@ -4,6 +4,6 @@
         <activity
             android:name=".SelfTestActivity"
             android:exported="true"
-            android:theme="@android:style/Theme.NoDisplay" />
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     </application>
 </manifest>
