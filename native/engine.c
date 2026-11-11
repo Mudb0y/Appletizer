@@ -1,0 +1,452 @@
+#define _GNU_SOURCE
+#include "engine.h"
+#include "ve.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+/* Samples per engine output buffer. Smaller means the first audio arrives
+ * sooner, which is what a screen reader notices. */
+#define PCM_SAMPLES 1024
+#define MAX_MARKS 32
+
+static void log_stderr(const char *msg) { fprintf(stderr, "appletizer: %s\n", msg); }
+static atz_log_cb log_fn = log_stderr;
+
+void atz_set_log(atz_log_cb log) { log_fn = log ? log : log_stderr; }
+
+static void logf_(const char *fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    log_fn(buf);
+}
+
+/* ---- data class: where resource names resolve to files -------------------- */
+
+typedef struct {
+    const char *dirs[2];
+    int ndirs;
+} data_class;
+
+/*
+ * The engine asks for resources by broker name ("clc/plp/cfg3", "lid") or by
+ * file name ("broker.hdr"). Apple's rule, kept exactly: slashes become
+ * underscores, a name with no dot gets ".dat", and the first search directory
+ * holding the result wins.
+ */
+static int resolve(const data_class *dc, const char *name, char *out, size_t outlen) {
+    char file[512];
+    size_t n = 0;
+    int dot = 0;
+    for (const char *p = name; *p && n < sizeof file - 5; p++) {
+        if (*p == '.') dot = 1;
+        file[n++] = *p == '/' ? '_' : *p;
+    }
+    file[n] = 0;
+    if (!dot) strcat(file, ".dat");
+    for (int i = 0; i < dc->ndirs; i++) {
+        struct stat st;
+        snprintf(out, outlen, "%s/%s", dc->dirs[i], file);
+        if (stat(out, &st) == 0) return 1;
+    }
+    logf_("no file for resource %s (%s)", name, file);
+    return 0;
+}
+
+/* ---- platform interfaces ---------------------------------------------------- */
+
+static void *heap_alloc(void *h, uint32_t size) { (void)h; return malloc(size); }
+static void *heap_calloc(void *h, uint32_t n, uint32_t size) { (void)h; return calloc(n, size); }
+static void *heap_realloc(void *h, void *p, uint32_t size) { (void)h; return realloc(p, size); }
+static void heap_free(void *h, void *p) { (void)h; free(p); }
+
+static const ve_heap_if heap_if = { heap_alloc, heap_calloc, heap_realloc, heap_free };
+
+static ve_err cs_open(void *cls, void *heap, void **out) {
+    (void)cls; (void)heap;
+    if (!out) return VE_E_ARG;
+    pthread_mutex_t *m = malloc(sizeof *m);
+    if (!m) return VE_E_NOMEM;
+    pthread_mutexattr_t a;
+    pthread_mutexattr_init(&a);
+    pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+    int r = pthread_mutex_init(m, &a);
+    pthread_mutexattr_destroy(&a);
+    if (r) { free(m); return VE_E_SYSTEM; }
+    *out = m;
+    return VE_OK;
+}
+static ve_err cs_close(void *cs) {
+    if (!cs) return VE_OK;
+    if (pthread_mutex_destroy(cs)) return VE_E_SYSTEM;
+    free(cs);
+    return VE_OK;
+}
+static ve_err cs_enter(void *cs) { return cs && pthread_mutex_lock(cs) ? VE_E_SYSTEM : VE_OK; }
+static ve_err cs_leave(void *cs) { return cs && pthread_mutex_unlock(cs) ? VE_E_SYSTEM : VE_OK; }
+
+static const ve_critsec_if critsec_if = { cs_open, cs_close, cs_enter, cs_leave };
+
+static ve_err st_open(void *dcp, void *heap, const char *name, const char *mode, void **out) {
+    (void)heap;
+    char path[1024];
+    if (!name || !mode || !out) return VE_E_ARG;
+    if (!resolve(dcp, name, path, sizeof path)) return VE_E_NOTFOUND;
+    FILE *f = fopen(path, mode);
+    if (!f) return VE_E_OPEN;
+    *out = f;
+    return VE_OK;
+}
+static ve_err st_close(void *s) {
+    if (!s) return VE_E_ARG;
+    return fclose(s) ? VE_E_CLOSE : VE_OK;
+}
+static uint32_t st_read(void *buf, uint32_t size, uint32_t count, void *s) {
+    return s ? (uint32_t)fread(buf, size, count, s) : 0;
+}
+static ve_err st_seek(void *s, uint32_t offset, uint32_t origin, uint32_t backwards) {
+    if (!s) return VE_E_ARG;
+    long off = backwards == (uint32_t)-1 ? -(long)offset : (long)offset;
+    int whence = origin == VE_SEEK_CUR ? SEEK_CUR : origin == VE_SEEK_END ? SEEK_END : SEEK_SET;
+    return fseek(s, off, whence) ? VE_E_SEEK : VE_OK;
+}
+static uint32_t st_size(void *s) {
+    struct stat st;
+    if (!s || fstat(fileno(s), &st)) return 0;
+    return (uint32_t)st.st_size;
+}
+static ve_err st_error(void *s) {
+    if (!s) return VE_E_ARG;
+    return ferror(s) ? VE_E_STREAM : VE_OK;
+}
+static uint32_t st_write(const void *buf, uint32_t size, uint32_t count, void *s) {
+    return s ? (uint32_t)fwrite(buf, size, count, s) : 0;
+}
+
+static const ve_stream_if stream_if = {
+    st_open, st_close, st_read, st_seek, st_size, st_error, st_write,
+};
+
+typedef struct {
+    const uint8_t *base;
+    size_t size;
+} mapping;
+
+/* Whole-file read-only mappings: the voice files are what the engine reads
+ * most, and the page cache shares them between engines for free. */
+static ve_err mp_open(void *dcp, void *heap, const char *name, void **out) {
+    (void)heap;
+    char path[1024];
+    if (!name || !out) return VE_E_ARG;
+    if (!resolve(dcp, name, path, sizeof path)) return VE_E_NOTFOUND;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return VE_E_OPEN;
+    struct stat st;
+    if (fstat(fd, &st)) { close(fd); return VE_E_OPEN; }
+    mapping *m = calloc(1, sizeof *m);
+    if (!m) { close(fd); return VE_E_NOMEM; }
+    m->size = (size_t)st.st_size;
+    if (m->size) {
+        void *p = mmap(NULL, m->size, PROT_READ, MAP_PRIVATE, fd, 0);
+        if (p == MAP_FAILED) {
+            logf_("mmap %s: %s", path, strerror(errno));
+            close(fd);
+            free(m);
+            return VE_E_SYSTEM;
+        }
+        m->base = p;
+    }
+    close(fd);
+    *out = m;
+    return VE_OK;
+}
+static ve_err mp_close(void *mp) {
+    mapping *m = mp;
+    if (!m) return VE_E_ARG;
+    if (m->base) munmap((void *)m->base, m->size);
+    free(m);
+    return VE_OK;
+}
+static ve_err mp_map(void *mp, uint32_t offset, uint32_t *bytes, const void **data) {
+    mapping *m = mp;
+    if (!m || !data) return VE_E_ARG;
+    if (offset > m->size) {
+        *data = NULL;
+        return VE_OK;
+    }
+    size_t avail = m->size - offset;
+    *data = m->base + offset;
+    if (bytes) *bytes = (*bytes == 0 || *bytes > avail) ? (uint32_t)avail : *bytes;
+    return VE_OK;
+}
+static ve_err mp_unmap(void *mp, const void *data) { (void)data; return mp ? VE_OK : VE_E_ARG; }
+static ve_err mp_freeze(void *mp) { (void)mp; return VE_OK; }
+
+static const ve_mapping_if mapping_if = { mp_open, mp_close, mp_map, mp_unmap, mp_freeze };
+
+/* ---- engine ------------------------------------------------------------------ */
+
+struct atz_engine {
+    data_class dc;
+    char *voice_dir, *common_dir;
+    char *broker;              /* broker.hdr text handed to the engine */
+    void *rules;               /* user_rules.txt, kept for the engine's lifetime */
+    void *prompts;             /* apdb.dat */
+    size_t prompts_len;
+    ve_handle speech, instance;
+    atz_voice_info info;
+
+    /* per-utterance state, touched by the notify callback */
+    int16_t pcm[PCM_SAMPLES];
+    ve_mark marks[MAX_MARKS];
+    atz_pcm_cb on_pcm;
+    atz_word_cb on_word;
+    void *user;
+    volatile int stopping;
+};
+
+static char *read_file(const char *path, size_t *len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = n >= 0 ? malloc((size_t)n + 1) : NULL;
+    if (buf && fread(buf, 1, (size_t)n, f) != (size_t)n) { free(buf); buf = NULL; }
+    fclose(f);
+    if (buf) {
+        buf[n] = 0;
+        if (len) *len = (size_t)n;
+    }
+    return buf;
+}
+
+static void tag(const char *xml, const char *name, char *out, size_t outlen) {
+    char open[64], close_[64];
+    snprintf(open, sizeof open, "<%s>", name);
+    snprintf(close_, sizeof close_, "</%s>", name);
+    out[0] = 0;
+    const char *a = strstr(xml, open);
+    if (!a) return;
+    a += strlen(open);
+    const char *b = strstr(a, close_);
+    if (!b) return;
+    size_t n = (size_t)(b - a) < outlen - 1 ? (size_t)(b - a) : outlen - 1;
+    memcpy(out, a, n);
+    out[n] = 0;
+}
+
+static void set_string(ve_param *p, uint32_t id, const char *s) {
+    memset(p, 0, sizeof *p);
+    p->id = id;
+    snprintf(p->u.string, sizeof p->u.string, "%s", s);
+}
+
+static void set_value(ve_param *p, uint32_t id, uint16_t v) {
+    memset(p, 0, sizeof *p);
+    p->id = id;
+    p->u.value = v;
+}
+
+static ve_err notify(ve_handle inst, void *user, ve_callback_msg *msg) {
+    (void)inst;
+    atz_engine *e = user;
+    ve_outdata *out = msg->param;
+    switch (msg->message) {
+    case VE_MSG_OUTBUFREQ:
+        if (e->stopping) return VE_E_NOBUFFER;
+        out->pcm = e->pcm;
+        out->pcm_bytes = sizeof e->pcm;
+        out->mark_list = e->marks;
+        out->marks = sizeof e->marks;
+        return VE_OK;
+    case VE_MSG_OUTBUFDONE:
+        if (e->on_word) {
+            for (uint32_t i = 0; i < out->marks && i < MAX_MARKS; i++) {
+                const ve_mark *m = &out->mark_list[i];
+                if (m->type == VE_MRK_WORD)
+                    e->on_word(e->user, m->src_pos / 2, (m->src_pos + m->src_len) / 2, m->dest_pos);
+            }
+        }
+        /* Refusing the next buffer request is what ends synthesis here;
+         * ve_ttsStop is for other threads. */
+        if (out->pcm_bytes && e->on_pcm && !e->stopping &&
+            e->on_pcm(e->user, out->pcm, out->pcm_bytes / 2))
+            e->stopping = 1;
+        return VE_OK;
+    default:
+        return VE_OK;
+    }
+}
+
+static void load_resource(atz_engine *e, const char *file, const char *mime, void **keep, size_t *keep_len) {
+    char path[1024];
+    size_t len = 0;
+    snprintf(path, sizeof path, "%s/%s", e->voice_dir, file);
+    char *data = read_file(path, &len);
+    if (!data) return;
+    ve_handle h;
+    ve_err r = ve_ttsResourceLoad(e->instance, mime, (uint32_t)len, data, &h);
+    if (r) {
+        logf_("loading %s failed: %#x", file, r);
+        free(data);
+        return;
+    }
+    *keep = data;
+    if (keep_len) *keep_len = len;
+}
+
+atz_engine *atz_open(const char *voice_dir, const char *common_dir, char *err, size_t errlen) {
+    atz_engine *e = calloc(1, sizeof *e);
+    if (!e) return NULL;
+    e->voice_dir = strdup(voice_dir);
+    e->common_dir = strdup(common_dir ? common_dir : voice_dir);
+    e->dc.dirs[0] = e->voice_dir;
+    e->dc.dirs[1] = e->common_dir;
+    e->dc.ndirs = 2;
+
+    char path[1024];
+    snprintf(path, sizeof path, "%s/broker.hdr", voice_dir);
+    char *hdr = read_file(path, NULL);
+    if (!hdr) {
+        snprintf(err, errlen, "cannot read %s", path);
+        goto fail;
+    }
+    /* Apple prepends "defaultvoice:<name>\n" to the built-in voices' headers
+     * and strips it again before the engine sees the XML. */
+    char *xml = hdr;
+    if (!strncmp(xml, "defaultvoice:", 13)) {
+        char *nl = strchr(xml, '\n');
+        xml = nl ? nl + 1 : xml + strlen(xml);
+    }
+    e->broker = strdup(xml);
+    free(hdr);
+
+    char hz[32];
+    tag(e->broker, "language", e->info.language, sizeof e->info.language);
+    tag(e->broker, "voice", e->info.voice, sizeof e->info.voice);
+    tag(e->broker, "voicemodel", e->info.model, sizeof e->info.model);
+    tag(e->broker, "frequencyhz", hz, sizeof hz);
+    e->info.sample_rate = atoi(hz);
+    if (!e->info.language[0] || !e->info.voice[0] || !e->info.sample_rate) {
+        snprintf(err, errlen, "%s lacks language, voice or frequencyhz", path);
+        goto fail;
+    }
+
+    ve_install inst = {
+        .format_version = 0x0520,
+        .broker_info = e->broker,
+        .heap_if = &heap_if,
+        .critsec_if = &critsec_if,
+        .stream_if = &stream_if,
+        .mapping_if = &mapping_if,
+        .data_class = &e->dc,
+    };
+    ve_err r = ve_ttsInitialize(&inst, &e->speech);
+    if (r) {
+        snprintf(err, errlen, "ve_ttsInitialize: %#x", r);
+        goto fail;
+    }
+    r = ve_ttsOpen(e->speech, NULL, NULL, &e->instance, NULL);
+    if (r) {
+        snprintf(err, errlen, "ve_ttsOpen: %#x", r);
+        ve_ttsUnInitialize(e->speech);
+        e->speech.data = NULL;
+        goto fail;
+    }
+
+    ve_param p[4];
+    set_string(&p[0], VE_PARAM_LANGUAGE, e->info.language);
+    set_string(&p[1], VE_PARAM_VOICE, e->info.voice);
+    set_value(&p[2], VE_PARAM_FREQUENCY, (uint16_t)(e->info.sample_rate / 1000));
+    set_value(&p[3], VE_PARAM_TYPE_OF_CHAR, 1);
+    r = ve_ttsSetParamList(e->instance, p, 4);
+    if (r) {
+        snprintf(err, errlen, "setting language and voice: %#x", r);
+        goto fail_open;
+    }
+    if (e->info.model[0]) {
+        set_string(&p[0], VE_PARAM_VOICE_MODEL, e->info.model);
+        r = ve_ttsSetParamList(e->instance, p, 1);
+        if (r) logf_("setting voice model %s: %#x", e->info.model, r);
+    }
+
+    load_resource(e, "user_rules.txt", "application/x-vocalizer-rettt+text", &e->rules, NULL);
+    load_resource(e, "apdb.dat", "application/x-vocalizer-activeprompt-db;mode=automatic",
+                  &e->prompts, &e->prompts_len);
+
+    ve_outdevice dev = { e, notify };
+    r = ve_ttsSetOutDevice(e->instance, &dev);
+    if (r) {
+        snprintf(err, errlen, "ve_ttsSetOutDevice: %#x", r);
+        goto fail_open;
+    }
+    return e;
+
+fail_open:
+    ve_ttsClose(e->instance);
+    ve_ttsUnInitialize(e->speech);
+    e->speech.data = NULL;
+fail:
+    free(e->broker);
+    free(e->voice_dir);
+    free(e->common_dir);
+    free(e->rules);
+    free(e->prompts);
+    free(e);
+    return NULL;
+}
+
+const atz_voice_info *atz_info(const atz_engine *e) { return &e->info; }
+
+static uint16_t clamp(int v, int lo, int hi) { return (uint16_t)(v < lo ? lo : v > hi ? hi : v); }
+
+int atz_set_prosody(atz_engine *e, int rate, int pitch, int volume) {
+    ve_param p[3];
+    set_value(&p[0], VE_PARAM_SPEECHRATE, clamp(rate, 50, 400));
+    set_value(&p[1], VE_PARAM_PITCH, clamp(pitch, 50, 200));
+    set_value(&p[2], VE_PARAM_VOLUME, clamp(volume, 0, 100));
+    return (int)ve_ttsSetParamList(e->instance, p, 3);
+}
+
+uint32_t atz_speak(atz_engine *e, const uint16_t *text, size_t len,
+                   atz_pcm_cb on_pcm, atz_word_cb on_word, void *user) {
+    e->on_pcm = on_pcm;
+    e->on_word = on_word;
+    e->user = user;
+    e->stopping = 0;
+    ve_intext in = { 0, (uint32_t)(len * 2), text };
+    ve_err r = ve_ttsProcessText2Speech(e->instance, &in);
+    e->on_pcm = NULL;
+    e->on_word = NULL;
+    if (r == VE_E_STOPPED || (r && e->stopping)) return 0;
+    return r;
+}
+
+void atz_stop(atz_engine *e) {
+    e->stopping = 1;
+    ve_ttsStop(e->instance);
+}
+
+void atz_close(atz_engine *e) {
+    if (!e) return;
+    ve_ttsClose(e->instance);
+    ve_ttsUnInitialize(e->speech);
+    free(e->broker);
+    free(e->voice_dir);
+    free(e->common_dir);
+    free(e->rules);
+    free(e->prompts);
+    free(e);
+}
