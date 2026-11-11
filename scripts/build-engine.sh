@@ -6,7 +6,7 @@ set -euo pipefail
 target=${1:?usage: build-engine.sh linux-arm64|android-arm64}
 root=$(cd "$(dirname "$0")/.." && pwd)
 voiced=${VOICED:-$root/work/ipsw/iPhone6,1_7.1.2/rootfs/Sochi11D257.N51OS/System/Library/PrivateFrameworks/VoiceServices.framework/Support/voiced}
-macho2elf=${MACHO2ELF:-$root/../apple-eloquence-elf/macho2elf/macho2elf.py}
+macho2elf=${MACHO2ELF:-$root/scripts/macho2elf.py}
 out=$root/work/build/$target
 ndk_bin=${ANDROID_NDK_ROOT:-}/toolchains/llvm/prebuilt/linux-x86_64/bin
 

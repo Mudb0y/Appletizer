@@ -1,0 +1,1872 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""
+macho2elf — Convert a libc-only Mach-O dylib to a Linux ELF .so
+
+Targeted at Apple's bundled ETI Eloquence engine (eci.dylib + language dylibs)
+which has only /usr/lib/libSystem.B.dylib + /usr/lib/libc++.1.dylib deps.
+
+Strategy:
+  1. Parse Mach-O via LIEF, extract every section as a binary blob
+  2. Emit an assembly stub that .incbin's each blob into a named ELF section
+  3. Emit symbol definitions: each export becomes a .globl alias at the right
+     offset within the section it lives in
+  4. Emit import stubs: declare each Darwin import as ELF UND, apply Darwin->
+     Linux renames (e.g. ___error -> __errno_location)
+  5. Emit a custom GOT section: .quad <symbol> for each Mach-O __DATA_CONST,__got
+     entry, in original order, at original vaddrs (so the existing __stubs jmps
+     still resolve correctly)
+  6. Emit a linker script that pins each ELF section at its original Mach-O
+     virtual address (preserves all RIP-relative offsets unchanged)
+  7. Invoke gcc -shared to link the final .so
+
+Usage:
+  macho2elf.py <input.dylib.x86_64> -o <output.so> [--workdir <dir>]
+
+The input must already be the extracted x86_64 slice (use llvm-lipo -extract).
+"""
+
+import argparse
+import os
+import struct
+import sys
+from pathlib import Path
+
+import lief
+
+# ----------------------------------------------------------------------------
+# Symbol renaming: Darwin name (after stripping the leading underscore that
+# Mach-O prepends to every C/C++ symbol) -> Linux equivalent.
+# ----------------------------------------------------------------------------
+
+DARWIN_TO_LINUX = {
+    # errno accessor
+    "__error":           "__errno_location",
+    # Darwin ctype function-form: Linux has tolower/toupper/etc. directly
+    "__tolower":         "tolower",
+    "__toupper":         "toupper",
+    # Darwin's _DefaultRuneLocale ctype table — glibc uses a different model
+    "_DefaultRuneLocale": "_macho2elf_rune_locale_stub",
+    # Darwin's __stderrp/__stdoutp/__stdinp are FILE * globals — Linux uses
+    # plain stderr/stdout/stdin variable names
+    "__stderrp":         "stderr",
+    "__stdoutp":         "stdout",
+    "__stdinp":          "stdin",
+}
+
+# Apple's arm64 calling convention passes ALL variadic arguments on the stack;
+# Linux AAPCS64 passes the first integer/FP variadic args in x2..x7 / v0..v7.
+# So a Darwin dylib calling a libc variadic function (sprintf, printf, ...)
+# lays its args out where glibc's implementation never looks -> it reads
+# register garbage instead. On arm64 we redirect each such import to a tiny
+# asm trampoline (emitted in stubs.c) that rebuilds a stack-only va_list and
+# forwards to the v* variant. x86_64's variadic ABI already matches glibc, so
+# this rename is arm64-only.  Maps: darwin name (underscore-stripped) -> shim.
+#
+# Two flavours of mismatch, both bridged in VARIADIC_TRAMPOLINES_ARM64:
+#  - "variadic" (the call IS variadic, e.g. sprintf(fmt, ...)): the args sit on
+#    the caller's stack; the trampoline builds a va_list pointing there.
+#  - "va_list" (the function TAKES a va_list, e.g. vfprintf(fp, fmt, ap)): the
+#    engine already ran va_start, and on Apple arm64 a va_list is a bare char*
+#    pointing at the stack args. glibc's va_list is a 5-field struct, so the
+#    forwarded list is misread. The shim wraps that char* into a struct.
+VARIADIC_SHIMS = {
+    # variadic call-boundary
+    "printf":         "m2e_va_printf",
+    "fprintf":        "m2e_va_fprintf",
+    "sprintf":        "m2e_va_sprintf",
+    "snprintf":       "m2e_va_snprintf",
+    "sscanf":         "m2e_va_sscanf",
+    "__sprintf_chk":  "m2e_va_sprintf_chk",
+    "__snprintf_chk": "m2e_va_snprintf_chk",
+    # takes an (Apple) va_list
+    "vfprintf":       "m2e_vl_vfprintf",
+    "__vsprintf_chk": "m2e_vl_vsprintf_chk",
+    "__vsnprintf_chk": "m2e_vl_vsnprintf_chk",
+}
+
+# Darwin libc calls whose ABI differs on every arm64 target, glibc and Bionic
+# alike, so they are redirected to shims in stubs.c.
+#
+# setjmp/longjmp: Darwin's arm64 jmp_buf is 48 ints (192 bytes) and code
+# compiled against it reserves exactly that. glibc's setjmp writes up to 192
+# bytes only because the kernel fills 8 of sigset_t's 128; Bionic writes 25
+# words (200 bytes, the last one a checksum), 8 past the end of the caller's
+# buffer. The shims save only what longjmp needs, in 168 bytes, and ignore the
+# signal mask, which none of the converted engines touch.
+#
+# memset_pattern16 exists only on Darwin. ftime is gone from Bionic and is a
+# compat-only symbol in current glibc, which an unversioned reference cannot
+# bind to.
+ARM64_DARWIN_SHIMS = {
+    "setjmp":           "m2e_setjmp",
+    "_setjmp":          "m2e_setjmp",
+    "longjmp":          "m2e_longjmp",
+    "_longjmp":         "m2e_longjmp",
+    "memset_pattern16": "m2e_memset_pattern16",
+    "ftime":            "m2e_ftime",
+}
+
+# Sections that exist in the input but are deliberately not carried over.
+# Apple's __eh_frame is DWARF CFI for its own unwinder; nothing in an ELF
+# process reads it at its Mach-O address, and the ELF .eh_frame comes from
+# stubs.o.
+SKIPPED_SECTIONS = {("__TEXT", "__eh_frame")}
+
+# --trap-missing state, set up in main(). AVAILABLE_SYMBOLS is what the target's
+# libraries and our stubs.c export; an import outside it is bound to a trap stub
+# that names the symbol and aborts if it is ever called. TRAPPED maps each such
+# Linux-side name to its trap stub.
+AVAILABLE_SYMBOLS = None
+TRAPPED = {}
+TRAP_PREFIX = "m2e_trap_"
+SKIP_INITIALIZERS = False
+
+# Bionic (Android libc) differs from glibc for a few accessors; these override
+# DARWIN_TO_LINUX on android-* targets. Bionic exposes the errno slot as
+# __errno() (glibc uses __errno_location()). stdin/stdout/stderr, tolower,
+# toupper, and our _DefaultRuneLocale stub are all fine as-is on Bionic.
+BIONIC_RENAMES = {
+    "__error": "__errno",   # Apple ___error -> Bionic __errno
+}
+
+# ----------------------------------------------------------------------------
+# Mach-O section -> ELF section mapping
+# ----------------------------------------------------------------------------
+
+# Each Mach-O section gets mapped to a uniquely named ELF section so the linker
+# script can place it at the right vaddr. Sections that need special handling
+# (got, common, bss) are emitted differently and not listed here.
+
+SECTION_LAYOUT = [
+    # (seg, sect, elf_name, flags, type)
+    ("__TEXT",       "__text",            ".m2e_text",         '"ax"',  "@progbits"),
+    ("__TEXT",       "__stubs",           ".m2e_stubs",        '"ax"',  "@progbits"),
+    ("__TEXT",       "__init_offsets",    ".m2e_init_offs",    '"a"',   "@progbits"),
+    ("__TEXT",       "__gcc_except_tab",  ".m2e_gcc_except",   '"a"',   "@progbits"),
+    ("__TEXT",       "__const",           ".m2e_text_const",   '"a"',   "@progbits"),
+    ("__TEXT",       "__cstring",         ".m2e_cstring",      '"a"',   "@progbits"),
+    ("__TEXT",       "__unwind_info",     ".m2e_unwind",       '"a"',   "@progbits"),
+    ("__DATA_CONST", "__const",           ".m2e_data_const",   '"aw"',  "@progbits"),
+    ("__DATA",       "__got_weak",        ".m2e_got_weak",     '"aw"',  "@progbits"),
+    ("__DATA",       "__const_weak",      ".m2e_const_weak",   '"aw"',  "@progbits"),
+    ("__DATA",       "__data",            ".m2e_data",         '"aw"',  "@progbits"),
+]
+
+# Zero-fill sections: (seg, sect, elf_name). Grown by extend_section_layout().
+NOBITS_LAYOUT = [
+    ("__DATA", "__common", ".m2e_common"),
+    ("__DATA", "__bss",    ".m2e_bss"),
+]
+
+ZEROFILL_TYPES = {
+    lief.MachO.Section.TYPE.ZEROFILL,
+    lief.MachO.Section.TYPE.GB_ZEROFILL,
+    lief.MachO.Section.TYPE.THREAD_LOCAL_ZEROFILL,
+}
+
+
+def extend_section_layout(binary):
+    """Give every section the fixed tables do not name a generated ELF section.
+
+    The fixed tables cover what Apple's tvOS-era dylibs contain. Older or
+    different images (an iOS 7 executable has __la_symbol_ptr, __stub_helper,
+    __cfstring and a dozen __objc_* sections) used to lose those sections
+    without a word, along with every pointer that targeted them. Flags follow
+    the owning segment's initial protection.
+    """
+    known = {(s, n) for s, n, *_ in SECTION_LAYOUT}
+    known |= {(s, n) for s, n, _ in NOBITS_LAYOUT}
+    known |= {("__DATA_CONST", "__got")} | SKIPPED_SECTIONS
+    added = []
+    for sec in binary.sections:
+        key = (sec.segment_name, sec.name)
+        if key in known:
+            continue
+        known.add(key)
+        elf_name = ".m2e_x_%s_%s" % (sec.segment_name.strip("_"), sec.name.strip("_"))
+        if sec.type in ZEROFILL_TYPES:
+            NOBITS_LAYOUT.append((sec.segment_name, sec.name, elf_name))
+        else:
+            prot = binary.get_segment(sec.segment_name).init_protection
+            flags = '"ax"' if prot & 4 else ('"aw"' if prot & 2 else '"a"')
+            SECTION_LAYOUT.append((sec.segment_name, sec.name, elf_name, flags, "@progbits"))
+        added.append(f"{sec.segment_name},{sec.name} -> {elf_name}")
+    return added
+
+
+def macho_label_map():
+    """(seg, sect) -> the ELF label marking that section's start."""
+    m = {(seg, sect): f"{elf_name}_start" for seg, sect, elf_name, _, _ in SECTION_LAYOUT}
+    m[("__DATA_CONST", "__got")] = ".m2e_got_start"
+    for seg, sect, elf_name in NOBITS_LAYOUT:
+        m[(seg, sect)] = f"{elf_name}_start"
+    return m
+
+
+class SectionIndex:
+    """Address -> section lookup, plus raw slot reads for classic rebases."""
+
+    def __init__(self, binary):
+        import bisect
+        self._bisect = bisect
+        self.secs = sorted(((s.virtual_address, s.virtual_address + s.size,
+                             s.segment_name, s.name, s) for s in binary.sections
+                            if s.size), key=lambda t: t[0])
+        self.starts = [t[0] for t in self.secs]
+        self._content = {}
+
+    def find(self, addr):
+        i = self._bisect.bisect_right(self.starts, addr) - 1
+        if i >= 0:
+            lo, hi, seg, sect, _ = self.secs[i]
+            if lo <= addr < hi:
+                return seg, sect, addr - lo
+        return None, None, None
+
+    def read_u64(self, addr):
+        i = self._bisect.bisect_right(self.starts, addr) - 1
+        lo, hi, _, _, sec = self.secs[i]
+        raw = self._content.get(lo)
+        if raw is None:
+            raw = self._content[lo] = bytes(sec.content)
+        return struct.unpack_from("<Q", raw, addr - lo)[0]
+
+
+def reloc_target(index, r):
+    """Target address of an internal fixup.
+
+    Chained fixups encode the target in the fixup itself, which LIEF exposes as
+    .target. Classic LC_DYLD_INFO rebases (everything before iOS 13 / macOS 11)
+    only mark the slot; the target is the unslid pointer already stored in it.
+    """
+    t = getattr(r, "target", None)
+    if t is not None:
+        return t
+    seg, _, _ = index.find(r.address)
+    if seg is None:
+        return None
+    return index.read_u64(r.address)
+
+# ----------------------------------------------------------------------------
+
+
+def collect_relocation_events(binary):
+    """Walk a LIEF MachO.Binary, return events_by_section.
+
+    Public hook so tools/audit_relocs.py can compare what macho2elf would
+    emit against ground truth, without running gcc. The format of
+    events_by_section matches what the assembly emitter consumes:
+        events_by_section[(seg, sect)] = [
+            (site_offset_within_section, "rebase", (tgt_label, tgt_off, tgt_seg, tgt_sect)),
+            (site_offset_within_section, "symref", (symbol_name, library_name)),
+            ...
+        ]
+
+    Note: the rebase tuple is extended from the existing (tgt_label, tgt_off)
+    form to also carry (tgt_seg, tgt_sect) for the audit's diff machinery.
+    Consumers that don't need the extras can ignore tuple indices 2 and 3.
+    """
+    macho_to_elf_label = macho_label_map()
+    index = SectionIndex(binary)
+
+    events_by_section = {}
+
+    # External bindings (libSystem / libc++ imports)
+    binding_addrs = {bi.address for bi in binary.bindings}
+    for bi in binary.bindings:
+        site_seg = site_sect = None
+        site_off = None
+        for s in binary.sections:
+            if s.virtual_address <= bi.address < s.virtual_address + s.size:
+                site_seg, site_sect = s.segment_name, s.name
+                site_off = bi.address - s.virtual_address
+                break
+        if site_seg is None:
+            continue
+        try:
+            symbol = bi.symbol.name if bi.has_symbol else "<no_sym>"
+        except (AttributeError, RuntimeError):
+            symbol = "<no_sym>"
+        try:
+            library = bi.library.name if hasattr(bi, "library") and bi.library else "?"
+        except (AttributeError, RuntimeError):
+            library = "?"
+        events_by_section.setdefault((site_seg, site_sect), []).append(
+            (site_off, "symref", (symbol, library)))
+
+    # Internal rebases (anything in binary.relocations that ISN'T a binding)
+    for r in binary.relocations:
+        if r.address in binding_addrs:
+            continue
+        site_seg = site_sect = None
+        site_off = None
+        for s in binary.sections:
+            if s.virtual_address <= r.address < s.virtual_address + s.size:
+                site_seg, site_sect = s.segment_name, s.name
+                site_off = r.address - s.virtual_address
+                break
+        if site_seg is None:
+            continue
+        # Strip the arm64 high8 tag byte (top byte of the pointer) before
+        # locating the target section; see the matching note in emit_assembly.
+        raw_tgt = reloc_target(index, r)
+        if raw_tgt is None:
+            continue
+        tgt = raw_tgt & 0x00FFFFFFFFFFFFFF
+        tgt_seg = tgt_sect = None
+        tgt_off = None
+        for s in binary.sections:
+            if s.virtual_address <= tgt < s.virtual_address + s.size:
+                tgt_seg, tgt_sect = s.segment_name, s.name
+                tgt_off = tgt - s.virtual_address
+                break
+        if tgt_seg is None:
+            continue
+        tgt_label = macho_to_elf_label.get((tgt_seg, tgt_sect))
+        if tgt_label is None:
+            continue
+        events_by_section.setdefault((site_seg, site_sect), []).append(
+            (site_off, "rebase", (tgt_label, tgt_off, tgt_seg, tgt_sect)))
+
+    return events_by_section
+
+
+# ----------------------------------------------------------------------------
+
+def strip_underscore(name: str) -> str:
+    """Strip a single leading underscore from a Mach-O symbol name."""
+    if name.startswith('_'):
+        return name[1:]
+    return name
+
+
+def rename_import(macho_name: str, target: str = None) -> str:
+    """Strip leading underscore and apply Darwin->{glibc,Bionic} renames.
+
+    `target` is an ARCH_CONFIG key ("x86_64", "arm64", "android-arm64").
+    On any arm64 target, libc variadic functions are redirected to our
+    va_list-rebuilding trampolines (see VARIADIC_SHIMS). On Android targets,
+    Bionic-specific renames (e.g. __errno_location -> __errno) take precedence
+    over the glibc defaults in DARWIN_TO_LINUX.
+    """
+    return _trap_if_missing(_rename_import(macho_name, target))
+
+
+def _trap_if_missing(name: str) -> str:
+    if AVAILABLE_SYMBOLS is None or name in AVAILABLE_SYMBOLS:
+        return name
+    return TRAPPED.setdefault(name, TRAP_PREFIX + name)
+
+
+def _rename_import(macho_name: str, target: str = None) -> str:
+    stripped = strip_underscore(macho_name)
+    if target and target.endswith("arm64") and stripped in VARIADIC_SHIMS:
+        return VARIADIC_SHIMS[stripped]
+    if target and target.endswith("arm64") and stripped in ARM64_DARWIN_SHIMS:
+        return ARM64_DARWIN_SHIMS[stripped]
+    if target and target.startswith("android"):
+        if stripped in BIONIC_RENAMES:
+            return BIONIC_RENAMES[stripped]
+        # The NDK's libc++ renames its inline namespace from std::__1 to
+        # std::__ndk1 (so an app's bundled libc++ can't clash with the
+        # platform's). Apple built the engine against std::__1. The ABI is
+        # otherwise identical and substitution refs are positional, so a textual
+        # St3__1 -> St6__ndk1 rewrite of the mangled name binds these imports
+        # straight to libc++_shared.so — functions, vtables, VTTs, type-infos,
+        # and locale facet ids alike. (Specific to NDKs that use __ndk1, which
+        # r27 does; if a future NDK reverts to __1 this rewrite becomes wrong.)
+        if "St3__1" in stripped:
+            return stripped.replace("St3__1", "St6__ndk1")
+    return DARWIN_TO_LINUX.get(stripped, stripped)
+
+
+def extract_sections(binary: lief.MachO.Binary, sections_dir: Path) -> dict:
+    """Dump every section's content as a binary blob; return metadata."""
+    sections_dir.mkdir(parents=True, exist_ok=True)
+    out = {}
+    for s in binary.sections:
+        key = (s.segment_name, s.name)
+        if s.size == 0:
+            out[key] = {
+                "vaddr": s.virtual_address,
+                "size":  s.size,
+                "file":  None,
+            }
+            continue
+        blob_path = sections_dir / f"{s.segment_name.strip('_')}__{s.name.strip('_')}.bin"
+        with open(blob_path, "wb") as f:
+            f.write(bytes(s.content))
+        out[key] = {
+            "vaddr": s.virtual_address,
+            "size":  s.size,
+            "file":  blob_path,
+        }
+    return out
+
+
+def collect_exports(binary: lief.MachO.Binary) -> list:
+    """Return a list of (linux_name, vaddr) tuples for every export."""
+    exports = []
+    for sym in binary.exported_symbols:
+        linux_name = strip_underscore(sym.name)
+        exports.append((linux_name, sym.value))
+    return exports
+
+
+def collect_bindings_per_section(binary: lief.MachO.Binary, target: str = None) -> tuple:
+    """Walk all bindings (legacy dyld_info AND chained-fixup formats).
+
+    Returns:
+      imports:       set of Linux symbol names to extern-declare
+      bindings_by_section:  {(seg, sect): [(offset_within_section, linux_name), ...]}
+    """
+    imports = set()
+    by_section = {}
+
+    # Build section lookup: vaddr range -> (seg, sect, base_vaddr)
+    sect_ranges = []
+    for s in binary.sections:
+        sect_ranges.append((s.virtual_address, s.virtual_address + s.size,
+                            s.segment_name, s.name))
+
+    def find_section(vaddr):
+        for lo, hi, seg, sect in sect_ranges:
+            if lo <= vaddr < hi:
+                return seg, sect, lo
+        return None, None, None
+
+    # Walk bindings — LIEF abstracts dyld_info AND chained-fixup formats here
+    for b in binary.bindings:
+        if not b.has_symbol:
+            continue
+        seg, sect, base = find_section(b.address)
+        if seg is None:
+            continue
+        offset = b.address - base
+        linux_name = rename_import(b.symbol.name, target)
+        by_section.setdefault((seg, sect), []).append((offset, linux_name))
+        imports.add(linux_name)
+
+    # Also include any imports that may have no binding site
+    for sym in binary.imported_symbols:
+        imports.add(rename_import(sym.name, target))
+
+    for k in by_section:
+        by_section[k].sort(key=lambda x: x[0])
+
+    return sorted(imports), by_section
+
+
+def get_section_vaddr(binary, seg, sect):
+    """Return vaddr of a given Mach-O section, or None if absent."""
+    for s in binary.sections:
+        if s.segment_name == seg and s.name == sect:
+            return s.virtual_address, s.size
+    return None, 0
+
+
+def get_segment_layout(binary):
+    """Return list of (name, vaddr, vsize, fsize) for each segment."""
+    return [(s.name, s.virtual_address, s.virtual_size, s.file_size)
+            for s in binary.segments]
+
+
+def is_executable_section(seg, sect):
+    return seg == "__TEXT" and sect in ("__text", "__stubs")
+
+
+# ----------------------------------------------------------------------------
+# Hybrid build: per-function substitution
+# ----------------------------------------------------------------------------
+#
+# To decompile an engine one function at a time you need a build where a chosen
+# function runs YOUR C while everything around it is still the original machine
+# code, so the whole engine works and its audio can be compared. That is what
+# --substitute does.
+#
+# The obvious approach -- omit the function's bytes and let the linker resolve
+# calls to a replacement -- cannot work: the call sites are baked into the
+# original instruction stream as fixed displacements, and every RIP-relative
+# reference in the image depends on nothing moving. So layout must be preserved
+# exactly.
+#
+# Instead we overwrite the function IN PLACE with a 6-byte indirect jump to the
+# replacement, and fill the remaining bytes with 0xCC so that any accidental
+# fallthrough traps loudly instead of executing whatever was left behind:
+#
+#     ff 25 <rel32>        jmp *slot(%rip)
+#     cc cc cc ...         int3 padding
+#
+# An indirect jump through a slot, rather than a direct 5-byte jmp rel32, so the
+# replacement can live anywhere the linker puts it without range concerns.
+#
+# The replacement symbol for function `foo` is `reloq_foo`, supplied by an object
+# file passed with --extra-object. The original symbol keeps its address and its
+# name, so callers, function pointers and vtables all still work.
+#
+# No function in the Eloquence modules is smaller than 6 bytes (checked across
+# all 3,144 in the English path), but a shorter one cannot be substituted and is
+# refused rather than silently corrupted.
+
+TRAMPOLINE_BYTES = 6
+SUBST_PREFIX = "reloq_"
+
+
+def load_substitutions(path):
+    """Read a substitution list: name <TAB> address <TAB> size per line.
+
+    The caller supplies sizes because the converter has no function-boundary
+    information -- Mach-O exports give addresses but not extents. Reloquence
+    generates this file from analysis/symbols/<module>.tsv, which is derived from
+    LC_FUNCTION_STARTS and therefore authoritative.
+    """
+    subs = []
+    for lineno, line in enumerate(Path(path).read_text().splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t") if "\t" in line else line.split()
+        if len(parts) != 3:
+            print(f"ERROR: {path}:{lineno}: expected 'name<TAB>addr<TAB>size', "
+                  f"got {line!r}", file=sys.stderr)
+            sys.exit(1)
+        name, addr, size = parts[0], int(parts[1], 0), int(parts[2], 0)
+        if size < TRAMPOLINE_BYTES:
+            print(f"ERROR: {path}:{lineno}: {name} is {size} bytes; a "
+                  f"substitution trampoline needs {TRAMPOLINE_BYTES}. Refusing "
+                  f"rather than corrupting adjacent code.", file=sys.stderr)
+            sys.exit(1)
+        subs.append(dict(name=name, addr=addr, size=size))
+    return subs
+
+
+def load_exposures(path):
+    """Read an exposure list: symbol <TAB> address [<TAB> type] per line.
+
+    Hybrid replacements routinely need to name things the dylib keeps private.
+    A ported C++ constructor must store the same vtable pointer the original
+    stored, but vtables are local symbols -- in eci.dylib only _ZTI10ETImessage
+    is exported, not _ZTV10ETImessage -- and 98 of 839 functions are not exported
+    either. Without a way to name an internal address, a faithful port of
+    anything touching internal data is impossible.
+
+    So this emits a global symbol at any address you choose. It changes nothing
+    about the image: a symbol is metadata, the bytes are untouched.
+
+    type defaults to @object; use @function for code.
+    """
+    out = []
+    for lineno, line in enumerate(Path(path).read_text().splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t") if "\t" in line else line.split()
+        if len(parts) not in (2, 3):
+            print(f"ERROR: {path}:{lineno}: expected 'symbol<TAB>addr[<TAB>type]',"
+                  f" got {line!r}", file=sys.stderr)
+            sys.exit(1)
+        name, addr = parts[0], int(parts[1], 0)
+        typ = parts[2] if len(parts) == 3 else "@object"
+        out.append(dict(name=name, addr=addr, type=typ))
+    return out
+
+
+def emit_progbits_with_events(add, elf_name, flags, sect_type,
+                               start_label, blob_filename, total_size,
+                               events, default_export_type):
+    """Emit a PROGBITS section interleaving .incbin chunks with events.
+
+    events: sorted list of (offset, kind, data):
+      kind="label", data=name     -> .globl/.type/label (no byte consumed)
+      kind="symref", data=sym     -> .quad sym (replaces 8 bytes)
+      kind="rebase", data=(L,off) -> .quad L + off (replaces 8 bytes)
+      kind="subst",  data=(slot,n) -> 6-byte jmp *slot(%rip) + int3 padding,
+                                      replacing all n bytes of the function
+    """
+    add(f".section {elf_name}, {flags}, {sect_type}")
+    add(f".balign 1")
+    add(f"{start_label}:")
+
+    cursor = 0
+    for off, kind, data in events:
+        if off > cursor:
+            add(f'.incbin "{blob_filename}", {cursor:#x}, {off - cursor:#x}')
+            cursor = off
+        if kind == "label":
+            name = data
+            add(f".globl {name}")
+            add(f".type {name}, {default_export_type}")
+            add(f"{name}:")
+        elif kind == "xlabel":
+            name, typ = data
+            add(f".globl {name}")
+            add(f".type {name}, {typ}")
+            add(f"{name}:")
+        elif kind == "symref":
+            sym = data
+            if sym:
+                add(f".quad {sym}")
+            else:
+                add(f".quad 0  /* unresolved binding */")
+            cursor = off + 8
+        elif kind == "rebase":
+            target_label, target_off = data
+            add(f".quad {target_label} + {target_off:#x}")
+            cursor = off + 8
+        elif kind == "subst":
+            slot, nbytes = data
+            add(f"    jmp *{slot}(%rip)")
+            if nbytes > TRAMPOLINE_BYTES:
+                add(f"    .fill {nbytes - TRAMPOLINE_BYTES:#x}, 1, 0xcc")
+            cursor = off + nbytes
+
+    if cursor < total_size:
+        add(f'.incbin "{blob_filename}", {cursor:#x}, {total_size - cursor:#x}')
+
+
+def emit_nobits_with_events(add, elf_name, flags, start_label, total_size,
+                             events, default_export_type):
+    """Emit a NOBITS section with label events (no byte payloads).
+
+    Both label kinds are emitted: "label" for an export and "xlabel" for an
+    --expose entry. This used to accept "label" only, so an exposure whose
+    address lands in __bss or __common was dropped without a word. That is a
+    silent failure of the worst shape: the C referring to the exposed symbol
+    still compiles, the link still succeeds, and the symbol resolves to
+    nothing at dlopen time, so the engine loads and renders no samples with
+    no crash and no message.
+
+    Payload events (symref, rebase, subst) genuinely cannot be emitted in a
+    section with no file contents, but they are announced rather than
+    dropped in silence, because a payload event here means something else is
+    wrong upstream.
+    """
+    add(f".section {elf_name}, {flags}, @nobits")
+    add(f".balign 1")
+    add(f"{start_label}:")
+
+    cursor = 0
+    for off, kind, data in events:
+        if kind not in ("label", "xlabel"):
+            add(f"/* WARNING: {kind} event at {off:#x} cannot be emitted in a"
+                f" nobits section; dropped */")
+            print(f"WARNING: {elf_name}: {kind} event at offset {off:#x} "
+                  f"dropped -- a nobits section has no contents to place it in.",
+                  file=sys.stderr)
+            continue
+        if off > cursor:
+            add(f".zero {off - cursor:#x}")
+            cursor = off
+        if kind == "label":
+            name, typ = data, default_export_type
+        else:
+            name, typ = data
+        add(f".globl {name}")
+        add(f".type {name}, {typ}")
+        add(f"{name}:")
+    if cursor < total_size:
+        add(f".zero {total_size - cursor:#x}")
+
+
+def emit_assembly(binary, exports, imports, bindings_by_section,
+                  sections, sections_dir, asm_path, substitutions=None,
+                  exposures=None):
+    """Emit the assembly stub. Exports go INSIDE their containing sections so
+    symbols are section-relative and ld puts them in .dynsym."""
+    lines = []
+    add = lines.append
+
+    add(f"/* macho2elf generated stub */")
+    add(f"/* Source dylib imagebase: {binary.imagebase} */")
+    add("")
+
+    add("/* Mark stack as non-executable (otherwise loader rejects the .so) */")
+    add('.section .note.GNU-stack, "", @progbits')
+    add("")
+
+    add("/* === IMPORTS (declared extern; linker resolves) === */")
+    for imp in imports:
+        add(f".extern {imp}")
+    add("")
+
+    substitutions = substitutions or []
+    if substitutions:
+        add("/* === HYBRID SUBSTITUTIONS === */")
+        add(f"/* {len(substitutions)} functions replaced in place by a 6-byte")
+        add("   indirect jump to a reloq_-prefixed implementation. The original")
+        add("   address and symbol are preserved, so baked call sites, function")
+        add("   pointers and vtables all still reach the replacement. */")
+        for sub in substitutions:
+            add(f".extern {SUBST_PREFIX}{sub['name']}")
+        add("")
+
+    # Build per-section event lists from exports + bindings + rebases
+    events_by_section = {}  # (seg, sect) -> [(offset, kind, data), ...]
+
+    # Bindings (symbol refs in data sections)
+    for (seg, sect), bindings in bindings_by_section.items():
+        for off, sym in bindings:
+            events_by_section.setdefault((seg, sect), []).append((off, "symref", sym))
+
+    # Exports (labels)
+    for name, vaddr in exports:
+        for s in binary.sections:
+            if s.virtual_address <= vaddr < s.virtual_address + s.size:
+                off = vaddr - s.virtual_address
+                events_by_section.setdefault((s.segment_name, s.name), []).append(
+                    (off, "label", name))
+                break
+
+    # Exposed internal addresses: a global symbol, no byte changes.
+    for exp in (exposures or []):
+        placed = False
+        for sec in binary.sections:
+            if sec.virtual_address <= exp["addr"] < sec.virtual_address + sec.size:
+                events_by_section.setdefault(
+                    (sec.segment_name, sec.name), []).append(
+                        (exp["addr"] - sec.virtual_address, "xlabel",
+                         (exp["name"], exp["type"])))
+                placed = True
+                break
+        if not placed:
+            print(f"ERROR: exposure {exp['name']} address {exp['addr']:#x} is in "
+                  f"no section of this slice.", file=sys.stderr)
+            sys.exit(1)
+
+    # Hybrid substitutions: overwrite the function in place with a trampoline.
+    for sub in substitutions:
+        placed = False
+        for sec in binary.sections:
+            if sec.virtual_address <= sub["addr"] < sec.virtual_address + sec.size:
+                off = sub["addr"] - sec.virtual_address
+                if off + sub["size"] > sec.size:
+                    print(f"ERROR: substitution {sub['name']} at "
+                          f"{sub['addr']:#x} size {sub['size']} runs past the end "
+                          f"of {sec.segment_name},{sec.name}", file=sys.stderr)
+                    sys.exit(1)
+                sub["slot"] = f".reloq_slot_{sub['name']}_{sub['addr']:x}"
+                events_by_section.setdefault(
+                    (sec.segment_name, sec.name), []).append(
+                        (off, "subst", (sub["slot"], sub["size"])))
+                placed = True
+                break
+        if not placed:
+            print(f"ERROR: substitution {sub['name']} address {sub['addr']:#x} "
+                  f"is in no section of this slice. Wrong module, or an address "
+                  f"from the other architecture?", file=sys.stderr)
+            sys.exit(1)
+
+    # Rebases (internal pointers — need R_X86_64_RELATIVE at load time)
+    macho_to_elf_label = macho_label_map()
+    index = SectionIndex(binary)
+    # Every internal fixup's target by slot address; __mod_init_func reads it.
+    rebase_targets = {}
+
+    # Track addresses already covered by b.bindings so we don't double-emit.
+    # b.bindings only covers EXTERNAL bindings (libSystem/libc++). Other relocs
+    # (has_symbol=True or False) are all target-based fixups — has_symbol just
+    # means LIEF knows a name for that slot, not that it's a different kind.
+    binding_addrs = {bi.address for bi in binary.bindings}
+
+    rebases_emitted = 0
+    rebases_dropped = 0
+    for r in binary.relocations:
+        if r.address in binding_addrs:
+            continue
+        site_seg, site_sect, site_off = index.find(r.address)
+        if site_seg is None:
+            rebases_dropped += 1
+            continue
+        raw_tgt = reloc_target(index, r)
+        if raw_tgt is None:
+            rebases_dropped += 1
+            continue
+        rebase_targets[r.address] = raw_tgt
+        # arm64 chained-fixup rebases can carry a "high8" tag in the top byte
+        # of the pointer (an arm64 top-byte-ignore tagged pointer; LIEF folds
+        # high8 into bits 56..63 of r.target). Strip it to locate the target
+        # section, but fold it back into the emitted addend so the runtime
+        # pointer keeps its original tag. x86_64 never sets high8, so this is
+        # a no-op there. Without the strip, the tagged target is out of range,
+        # the lookup fails, and the rebase is silently dropped -- leaving the
+        # raw chained-fixup bytes in the slot (garbage pointer at runtime).
+        tgt_tag = raw_tgt & 0xFF00000000000000
+        tgt = raw_tgt & 0x00FFFFFFFFFFFFFF
+        tgt_seg, tgt_sect, tgt_off = index.find(tgt)
+        if tgt_seg is None:
+            rebases_dropped += 1
+            continue
+        tgt_label = macho_to_elf_label.get((tgt_seg, tgt_sect))
+        if tgt_label is None:
+            rebases_dropped += 1
+            continue
+        events_by_section.setdefault((site_seg, site_sect), []).append(
+            (site_off, "rebase", (tgt_label, tgt_off + tgt_tag)))
+        rebases_emitted += 1
+    sym_relocs_emitted = 0
+
+    # Sort and deduplicate (in case binding+rebase land on same slot — bindings win)
+    for k in events_by_section:
+        # Stable sort: order is (offset, kind_priority). Label first, then symref over rebase.
+        prio = {"label": 0, "xlabel": 0, "subst": 1, "symref": 2, "rebase": 3}
+        events_by_section[k].sort(key=lambda e: (e[0], prio.get(e[1], 9)))
+        # Dedup: if multiple events at same offset & kind, keep first
+        seen = set()
+        deduped = []
+        for ev in events_by_section[k]:
+            key = (ev[0], ev[1])
+            if key in seen and ev[1] != "label":
+                continue
+            seen.add(key)
+            deduped.append(ev)
+        events_by_section[k] = deduped
+
+    add(f"/* rebases: {rebases_emitted} emitted, {sym_relocs_emitted} internal-symbol relocs, {rebases_dropped} dropped */")
+    add("")
+
+    # --- PROGBITS sections -----------------------------------------------
+    for seg, sect, elf_name, flags, sect_type in SECTION_LAYOUT:
+        key = (seg, sect)
+        if key not in sections:
+            continue
+        meta = sections[key]
+        if meta["file"] is None or meta["size"] == 0:
+            continue
+        events = events_by_section.get(key, [])
+        export_type = "@function" if is_executable_section(seg, sect) else "@object"
+        add(f"/* === {seg},{sect} -> {elf_name} (vaddr={meta['vaddr']:#x} size={meta['size']:#x} events={len(events)}) === */")
+        emit_progbits_with_events(
+            add, elf_name, flags, sect_type,
+            f"{elf_name}_start", meta["file"].name, meta["size"],
+            events, export_type)
+        add("")
+
+    # --- hybrid substitution slots ---------------------------------------
+    # One 8-byte slot per substituted function, holding the address of the
+    # replacement. Writable and relocated at load time (R_X86_64_64 -> the
+    # linker emits a dynamic relocation), which is why the trampoline jumps
+    # indirectly rather than to a fixed displacement.
+    if substitutions:
+        add('/* === hybrid substitution slots === */')
+        add('.section .reloq_slots, "aw", @progbits')
+        add(".balign 8")
+        for sub in substitutions:
+            add(f"{sub['slot']}:")
+            add(f"    .quad {SUBST_PREFIX}{sub['name']}")
+        add("")
+
+    # --- __DATA_CONST,__got (pure symbol table, no raw bytes) ------------
+    # The GOT can hold two kinds of 8-byte entries:
+    #   - External bindings: pointer to a symbol the loader resolves at
+    #     load time (libc/libc++/...). We collected these as `bindings`
+    #     above and emit them as `.quad <sym>` so the static linker can
+    #     generate the right GLOB_DAT / JUMP_SLOT relocation.
+    #   - Internal rebases: pointer to an address inside this dylib.
+    #     These were registered in events_by_section as "rebase" events.
+    #     We must emit them as `.quad <elf_label> + offset` so the static
+    #     linker generates an R_X86_64_RELATIVE that re-bases the pointer
+    #     at load time.
+    #
+    # The earlier implementation only walked `got_bindings` and zero-
+    # filled the gaps, which dropped every rebase. For Apple's
+    # jpnrom.so (and any other language module with internal pointers in
+    # its GOT) that produced NULL pointers in __const that the language
+    # code crashes on the first time it dereferences them.
+    got_vaddr, got_size = get_section_vaddr(binary, "__DATA_CONST", "__got")
+    if got_vaddr is not None and got_size > 0:
+        got_events = events_by_section.get(("__DATA_CONST", "__got"), [])
+        # Merge bindings (which weren't added to events_by_section because
+        # we wanted to keep the symref/rebase split for normal sections)
+        # with the rebase events. Sort by offset; if both kinds claim the
+        # same slot the binding wins (Mach-O may report both, but the
+        # binding is the canonical external link).
+        merged = {}
+        for off, sym_name in bindings_by_section.get(("__DATA_CONST", "__got"), []):
+            merged[off] = ("symref", sym_name)
+        for off, kind, data in got_events:
+            if kind == "rebase" and off not in merged:
+                merged[off] = ("rebase", data)
+        items = sorted(merged.items())
+        n_sym = sum(1 for _, (k, _) in items if k == "symref")
+        n_reb = sum(1 for _, (k, _) in items if k == "rebase")
+        add(f"/* === __DATA_CONST,__got -> .m2e_got (vaddr={got_vaddr:#x} size={got_size:#x} bindings={n_sym} rebases={n_reb}) === */")
+        add(f".section .m2e_got, \"aw\", @progbits")
+        add(f".balign 8")
+        add(f".m2e_got_start:")
+        prev_off = 0
+        for off, (kind, data) in items:
+            if off > prev_off:
+                add(f".zero {off - prev_off}")
+            if kind == "symref":
+                add(f".quad {data}" if data else ".quad 0")
+            else:  # rebase
+                tgt_label, tgt_off = data
+                add(f".quad {tgt_label} + {tgt_off:#x}")
+            prev_off = off + 8
+        if got_size > prev_off:
+            add(f".zero {got_size - prev_off}")
+        add("")
+
+    # --- NOBITS sections -------------------------------------------------
+    for seg, sect, elf_name in NOBITS_LAYOUT:
+        nb_vaddr, nb_size = get_section_vaddr(binary, seg, sect)
+        if not nb_size:
+            continue
+        events = events_by_section.get((seg, sect), [])
+        add(f"/* === {seg},{sect} -> {elf_name} (vaddr={nb_vaddr:#x} size={nb_size:#x} events={len(events)}) === */")
+        emit_nobits_with_events(add, elf_name, '"aw"',
+                                  f"{elf_name}_start", nb_size,
+                                  events, "@object")
+        add("")
+
+    # --- .init_array from __mod_init_func ---------------------------------
+    # The pre-iOS 14 form: an array of absolute pointers, each one a rebase.
+    # An executable's initializers belong to the program being dismantled (an
+    # Objective-C daemon's, say) and may need runtimes that are not there, so
+    # --skip-initializers leaves them out.
+    for s in binary.sections:
+        if s.type != lief.MachO.Section.TYPE.MOD_INIT_FUNC_POINTERS or not s.size:
+            continue
+        if SKIP_INITIALIZERS:
+            add(f"/* {s.size // 8} __mod_init_func initializer(s) skipped (--skip-initializers) */")
+            print(f"[macho2elf] skipping {s.size // 8} initializer(s) in {s.segment_name},{s.name}")
+            continue
+        add(f"/* === .init_array (from {s.size // 8} entries in {s.segment_name},{s.name}) === */")
+        add(".section .init_array, \"aw\", @init_array")
+        add(".balign 8")
+        for slot in range(s.virtual_address, s.virtual_address + s.size, 8):
+            tgt = rebase_targets.get(slot)
+            tseg, tsect, toff = index.find(tgt) if tgt is not None else (None, None, None)
+            label = macho_to_elf_label.get((tseg, tsect))
+            if label is None:
+                print(f"ERROR: initializer slot {slot:#x} has no resolvable target", file=sys.stderr)
+                sys.exit(1)
+            add(f".quad {label} + {toff:#x}")
+        add("")
+
+    # --- .init_array (run Mach-O __init_offsets initializers at load) ----
+    # Mach-O __init_offsets format: array of 4-byte image-relative offsets to
+    # initializer functions (C++ static constructors). ld.so runs .init_array
+    # before any other code can use the library — exactly what we need.
+    image_base = binary.get_segment("__TEXT").virtual_address
+    for s in binary.sections:
+        if s.segment_name == "__TEXT" and s.name == "__init_offsets" and s.size > 0:
+            if SKIP_INITIALIZERS:
+                add(f"/* {s.size // 4} __init_offsets initializer(s) skipped (--skip-initializers) */")
+                break
+            raw = bytes(s.content)
+            init_count = s.size // 4
+            offsets = [struct.unpack("<I", raw[i*4:i*4+4])[0] for i in range(init_count)]
+            add(f"/* === .init_array (from {init_count} entries in __init_offsets) === */")
+            add(f".section .init_array, \"aw\", @init_array")
+            add(f".balign 8")
+            for init_idx, off in enumerate(offsets):
+                # Find which section the function lives in and emit a
+                # section-relative reference so ld generates R_X86_64_RELATIVE.
+                tgt_seg, tgt_sect, tgt_inner = index.find(image_base + off)
+                if tgt_seg is None:
+                    add(f"/* WARNING: init offset {off:#x} not in any section */")
+                    add(f".quad 0")
+                    continue
+                tgt_label = macho_to_elf_label.get((tgt_seg, tgt_sect), None)
+                if tgt_label is None:
+                    add(f"/* WARNING: init offset {off:#x} in {tgt_seg},{tgt_sect} has no ELF label */")
+                    add(f".quad 0")
+                    continue
+                add(f".quad {tgt_label} + {tgt_inner:#x}  /* init #{init_idx} */")
+            add("")
+            break
+
+    # --- Every exposure must actually be in the output --------------------
+    # Checking the effect, not the premise. An exposure is placed by address
+    # into whatever section contains it, and several sections never reach an
+    # emitter: a nobits section used to drop label events that were not plain
+    # exports, __DATA_CONST,__got is emitted by its own merge loop which knows
+    # only symrefs and rebases, and any section absent from SECTION_LAYOUT or
+    # with no extracted file is skipped entirely. In every one of those cases
+    # the address lookup above succeeds, so nothing complains, and the missing
+    # symbol only shows up as an engine that loads and produces silence.
+    #
+    # So scan the emitted text for each exposed name and fail loudly here
+    # rather than at dlopen time in someone else's project.
+    emitted_globals = {ln.split(None, 1)[1].strip()
+                       for ln in lines if ln.startswith(".globl ")}
+    missing = [e for e in (exposures or []) if e["name"] not in emitted_globals]
+    if missing:
+        for e in missing:
+            sec = next((f"{s.segment_name},{s.name}" for s in binary.sections
+                        if s.virtual_address <= e["addr"]
+                        < s.virtual_address + s.size), "no section")
+            print(f"ERROR: exposure {e['name']} at {e['addr']:#x} ({sec}) was "
+                  f"placed but never emitted; the section it lands in has no "
+                  f"emitter for it.", file=sys.stderr)
+        sys.exit(1)
+
+    # --- Tally -----------------------------------------------------------
+    total_labels = sum(1 for evs in events_by_section.values() for e in evs if e[1] == "label")
+    total_symrefs = sum(1 for evs in events_by_section.values() for e in evs if e[1] == "symref")
+
+    with open(asm_path, "w") as f:
+        f.write("\n".join(lines))
+
+    return total_labels, total_symrefs
+
+
+def emit_linker_script(binary, sections, lds_path, arch_cfg=None):
+    """Generate a linker script that pins each section at its Mach-O vaddr."""
+    lines = []
+    add = lines.append
+
+    segments = get_segment_layout(binary)
+
+    add("/* macho2elf generated linker script */")
+    if arch_cfg:
+        add(f"OUTPUT_FORMAT({arch_cfg['elf_format']})")
+        add(f"OUTPUT_ARCH({arch_cfg['elf_arch']})")
+    else:
+        add("OUTPUT_FORMAT(elf64-x86-64)")
+        add("OUTPUT_ARCH(i386:x86-64)")
+    add("")
+    # FILEHDR PHDRS on the first PT_LOAD (+ a PT_PHDR) place the ELF header and
+    # program-header table INSIDE a loaded segment. glibc's loader tolerates
+    # phdrs that sit before the first PT_LOAD; Android's Bionic linker does not
+    # ("can't find loaded phdr") and refuses to dlopen the library. Mach-O always
+    # leaves a gap below __text (it held the mach header + load commands), so
+    # there's room for the ELF headers at vaddr 0 ahead of the pinned sections.
+    add("PHDRS {")
+    add("    phdrs    PT_PHDR       PHDRS;")
+    add("    text     PT_LOAD       FILEHDR PHDRS FLAGS(5);  /* R-X (Mach-O __TEXT) */")
+    add("    rwdata   PT_LOAD       FLAGS(6);  /* RW- (Mach-O __DATA*) */")
+    add("    auxtext  PT_LOAD       FLAGS(5);  /* R-X (linker-auto .plt/.text from stubs.c) */")
+    add("    dynamic  PT_DYNAMIC    FLAGS(6);")
+    add("    gnustack PT_GNU_STACK  FLAGS(6);")
+    add("}")
+    add("")
+    add("SECTIONS {")
+
+    # We need each section placed at its original Mach-O vaddr.
+    # Use position-dependent `. = vaddr` then place the section.
+    # Provide _start labels for offset calculation in the asm stub.
+
+    add("    . = 0;")
+    add("")
+
+    # Collect all sections to place, sorted by vaddr
+    placements = []  # (vaddr, size, elf_name, phdr, nobits)
+
+    # A dylib's image starts at 0. An executable's starts at its __TEXT vmaddr
+    # (0x100000000 on arm64, above __PAGEZERO); placing it there would put a
+    # 4 GB hole between the ELF headers and the code. Code reaches everything
+    # PC-relatively and every absolute pointer is a rebase, emitted as
+    # section label + offset, so sliding the whole image down is exactly what
+    # dyld would do and changes nothing for a dylib.
+    image_base = binary.get_segment("__TEXT").virtual_address
+
+    for seg, sect, elf_name, _, _ in SECTION_LAYOUT:
+        key = (seg, sect)
+        if key not in sections:
+            continue
+        meta = sections[key]
+        if meta["size"] == 0:
+            continue
+        # Everything outside __TEXT goes into rwdata (matches Mach-O's
+        # __DATA_CONST-then-mprotect behavior using ELF .data.rel.ro
+        # semantics). Keeping __DATA_CONST in a separate "rodata" PT_LOAD
+        # causes segment overlap because Mach-O packs __DATA_CONST and
+        # __DATA at adjacent vaddrs.
+        phdr = "text" if seg == "__TEXT" else "rwdata"
+        placements.append((meta["vaddr"] - image_base, meta["size"], elf_name, phdr, False))
+
+    got_vaddr, got_size = get_section_vaddr(binary, "__DATA_CONST", "__got")
+    if got_vaddr is not None and got_size > 0:
+        placements.append((got_vaddr - image_base, got_size, ".m2e_got", "rwdata", False))
+
+    for seg, sect, elf_name in NOBITS_LAYOUT:
+        nb_vaddr, nb_size = get_section_vaddr(binary, seg, sect)
+        if nb_size:
+            placements.append((nb_vaddr - image_base, nb_size, elf_name, "rwdata", True))
+
+    # Sort by vaddr so the script is monotonic
+    placements.sort(key=lambda p: p[0])
+
+    for vaddr, _, elf_name, phdr, nobits in placements:
+        add(f"    . = {vaddr:#x};")
+        add(f"    {elf_name}_start = .;")
+        if nobits:
+            add(f"    {elf_name} (NOLOAD) : {{ KEEP(*({elf_name})) }} :{phdr}")
+        else:
+            add(f"    {elf_name} : {{ KEEP(*({elf_name})) }} :{phdr}")
+
+    # Compute end of all Mach-O placements + page-align, then push linker-
+    # generated dynamic sections that high so they never overlap.
+    max_end = max((vaddr + size for vaddr, size, _, _, _ in placements), default=0x100000)
+    # Round up to next 64KB boundary for safety
+    dyn_base = (max_end + 0xffff) & ~0xffff
+    add("")
+    add(f"    . = {dyn_base:#x};")
+    add("    .dynsym             : { *(.dynsym) } :rwdata")
+    add("    .dynstr             : { *(.dynstr) } :rwdata")
+    add("    .gnu.hash           : { *(.gnu.hash) } :rwdata")
+    add("    .gnu.version        : { *(.gnu.version) } :rwdata")
+    add("    .gnu.version_r      : { *(.gnu.version_r) } :rwdata")
+    add("    .rela.dyn           : { *(.rela.dyn) } :rwdata")
+    add("    .rela.plt           : { *(.rela.plt) } :rwdata")
+    add("    .dynamic            : { *(.dynamic) } :rwdata :dynamic")
+    add("    .note.gnu.build-id  : { *(.note.gnu.build-id) } :rwdata")
+    add("    .got                : { *(.got) } :rwdata")
+    add("    .got.plt            : { *(.got.plt) } :rwdata")
+    # Keep ALL file-backed rwdata sections contiguous with the dynamic tables
+    # above. .eh_frame/.eh_frame_hdr are PROGBITS, so if they were placed
+    # AFTER the big auxtext gap below they'd live in :rwdata at a ~2MB vaddr
+    # while the rest of :rwdata sits at ~0x21000 — forcing the RW PT_LOAD's
+    # file image (p_filesz) to span the whole gap and bloating the .so ~7x
+    # with zero padding. Emit them here, before the gap. .bss is NOBITS so it
+    # never occupies file space; placing it low keeps rwdata's memsz small
+    # enough that it can't overlap auxtext.
+    # Explicitly place the orphan data sections from stubs.o (e.g. .data holds
+    # __stack_chk_guard). Without this, lld (the NDK/Android linker) assigns
+    # them an address that collides with our pinned .m2e_* sections; bfd happens
+    # to place them safely, but being explicit fixes both. They sit here in
+    # :rwdata, above all pinned sections and contiguous with the dynamic tables.
+    add("    .data               : { *(.data) *(.data.*) } :rwdata")
+    add("    .data.rel.ro        : { *(.data.rel.ro) *(.data.rel.ro.*) } :rwdata")
+    add("    .eh_frame           : { *(.eh_frame) } :rwdata")
+    add("    .eh_frame_hdr       : { *(.eh_frame_hdr) } :rwdata")
+    add("    .bss                : { *(.bss) *(.bss.*) *(COMMON) } :rwdata")
+    # Place auto-generated text sections (from stubs.c) in a SEPARATE PT_LOAD
+    # segment (auxtext) at a high vaddr so the main text segment doesn't need
+    # to span all the way out here. The vaddr gap costs nothing on disk: a
+    # distinct PT_LOAD gets its own file offset, packed right after rwdata.
+    #
+    # The wildcards must catch *function-sections* (.text.*, .gcc_except_table.*
+    # etc.): -lunwind / clang_rt on Android are built with -ffunction-sections,
+    # so they contribute .text._Unwind_RaiseException and friends. Without the
+    # broad match those land as orphans on top of the pinned .m2e_* sections and
+    # lld errors on the overlap. (bfd/glibc never hit this — nothing was linked
+    # that way — but the broad form is correct for both.)
+    add("    . = ALIGN(0x100000);")
+    add("    . = . + 0x100000;")
+    add("    .plt                : { *(.plt) } :auxtext")
+    add("    .plt.got            : { *(.plt.got) } :auxtext")
+    add("    .plt.sec            : { *(.plt.sec) } :auxtext")
+    add("    .text               : { *(.text) *(.text.*) } :auxtext")
+    add("    .rodata             : { *(.rodata) *(.rodata.*) } :auxtext")
+    add("    .gcc_except_table   : { *(.gcc_except_table) *(.gcc_except_table.*) } :auxtext")
+
+    add("")
+    add("    .note.GNU-stack     : { *(.note.GNU-stack) } :gnustack")
+    add("    /DISCARD/ : { *(.comment) *(.note.gnu.property) }")
+    add("}")
+
+    with open(lds_path, "w") as f:
+        f.write("\n".join(lines))
+
+
+def emit_runtime_stubs(stubs_path, target: str = None):
+    """Emit C stubs for Darwin-specific symbols we need to provide.
+
+    Includes _DefaultRuneLocale (a stub for Darwin's ctype table), the stack
+    canary, __maskrune, and — on any arm64 target — the variadic trampolines
+    that bridge Apple's stack-only variadic ABI to the AAPCS64 register-based
+    one (glibc or Bionic) plus the __chkstk_darwin stub.
+    """
+    content = r"""// macho2elf runtime stubs — Darwin-specific symbols with no Linux equivalent.
+
+#include <stddef.h>
+#include <stdint.h>
+#include <ctype.h>
+
+// __DefaultRuneLocale stub. Apple's libc <ctype.h> inlines isXXX(c) checks
+// against this struct. We provide a buffer to satisfy GOT bindings; the
+// actual classification is done via __maskrune below.
+struct { char placeholder[8192]; } _macho2elf_rune_locale_stub = {{0}};
+
+// __stack_chk_guard — glibc keeps the real canary in TLS (fs:0x28) and
+// doesn't export the symbol. Our converted Mach-O references it via GOT,
+// so we provide it. Apple's convention is to have the high byte be 0x00
+// (so string-based overflow attacks include a null terminator). Match that.
+uintptr_t __stack_chk_guard = 0x00cafebabedeadbeULL;
+
+// __maskrune(c, mask) — Darwin's runtime ctype lookup. Returns nonzero if
+// character c has any of the bits in mask set in __runetype[c]. Apple's
+// inline ctype.h macros call this. Map Darwin's _CTYPE_* bits to glibc's
+// ctype functions for ASCII (which is all the engine ever passes).
+//
+// Darwin _CTYPE_* values (from <_ctype.h>):
+#define DARWIN_CTYPE_A    0x00000100L  // Alpha
+#define DARWIN_CTYPE_C    0x00000200L  // Cntrl
+#define DARWIN_CTYPE_D    0x00000400L  // Digit
+#define DARWIN_CTYPE_G    0x00000800L  // Graph
+#define DARWIN_CTYPE_L    0x00001000L  // Lower
+#define DARWIN_CTYPE_P    0x00002000L  // Punct
+#define DARWIN_CTYPE_S    0x00004000L  // Space
+#define DARWIN_CTYPE_U    0x00008000L  // Upper
+#define DARWIN_CTYPE_X    0x00010000L  // X digit
+#define DARWIN_CTYPE_B    0x00020000L  // Blank
+#define DARWIN_CTYPE_R    0x00040000L  // Print
+
+unsigned long __maskrune(int c, unsigned long mask) {
+    if (c < 0 || c > 127) return 0;  // engine only passes ASCII
+    unsigned long r = 0;
+    if (isalpha(c))  r |= DARWIN_CTYPE_A;
+    if (iscntrl(c))  r |= DARWIN_CTYPE_C;
+    if (isdigit(c))  r |= DARWIN_CTYPE_D;
+    if (isgraph(c))  r |= DARWIN_CTYPE_G;
+    if (islower(c))  r |= DARWIN_CTYPE_L;
+    if (ispunct(c))  r |= DARWIN_CTYPE_P;
+    if (isspace(c))  r |= DARWIN_CTYPE_S;
+    if (isupper(c))  r |= DARWIN_CTYPE_U;
+    if (isxdigit(c)) r |= DARWIN_CTYPE_X;
+    if (isblank(c))  r |= DARWIN_CTYPE_B;
+    if (isprint(c))  r |= DARWIN_CTYPE_R;
+    return r & mask;
+}
+
+"""
+    if target and target.endswith("arm64"):
+        content += VARIADIC_TRAMPOLINES_ARM64
+        content += ARM64_DARWIN_SHIM_CODE
+    if target and target.startswith("android"):
+        content += BIONIC_COMPAT_STUBS
+    if TRAPPED:
+        content += trap_stub_code(target)
+    with open(stubs_path, "w") as f:
+        f.write(content)
+
+
+# Bodies for ARM64_DARWIN_SHIMS.
+ARM64_DARWIN_SHIM_CODE = r"""
+// ---- Darwin arm64 libc shims (see ARM64_DARWIN_SHIMS in macho2elf.py) ----
+#include <time.h>
+
+void m2e_memset_pattern16(void *b, const void *pattern16, size_t len) {
+    unsigned char *d = b;
+    const unsigned char *p = pattern16;
+    for (size_t i = 0; i < len; i++) d[i] = p[i & 15];
+}
+
+// Darwin's struct timeb, which is what the engine was compiled against.
+struct m2e_darwin_timeb { long time; unsigned short millitm; short timezone; short dstflag; };
+int m2e_ftime(struct m2e_darwin_timeb *tp) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    if (tp) {
+        tp->time     = (long)ts.tv_sec;
+        tp->millitm  = (unsigned short)(ts.tv_nsec / 1000000);
+        tp->timezone = 0;
+        tp->dstflag  = 0;
+    }
+    return 0;
+}
+
+// A jmp_buf that fits Darwin's 192 bytes: x19-x28, fp, lr, sp, d8-d15 in 168.
+// x18 is the platform register on both Darwin and Android and is left alone.
+__asm__(
+"   .text\n"
+"   .balign 4\n"
+"   .global m2e_setjmp\n"
+"   .type m2e_setjmp, %function\n"
+"m2e_setjmp:\n"
+"   stp  x19, x20, [x0, #0]\n"
+"   stp  x21, x22, [x0, #16]\n"
+"   stp  x23, x24, [x0, #32]\n"
+"   stp  x25, x26, [x0, #48]\n"
+"   stp  x27, x28, [x0, #64]\n"
+"   stp  x29, x30, [x0, #80]\n"
+"   mov  x16, sp\n"
+"   str  x16, [x0, #96]\n"
+"   stp  d8,  d9,  [x0, #104]\n"
+"   stp  d10, d11, [x0, #120]\n"
+"   stp  d12, d13, [x0, #136]\n"
+"   stp  d14, d15, [x0, #152]\n"
+"   mov  w0, #0\n"
+"   ret\n"
+"   .size m2e_setjmp, .-m2e_setjmp\n"
+"   .global m2e_longjmp\n"
+"   .type m2e_longjmp, %function\n"
+"m2e_longjmp:\n"
+"   ldp  x19, x20, [x0, #0]\n"
+"   ldp  x21, x22, [x0, #16]\n"
+"   ldp  x23, x24, [x0, #32]\n"
+"   ldp  x25, x26, [x0, #48]\n"
+"   ldp  x27, x28, [x0, #64]\n"
+"   ldp  x29, x30, [x0, #80]\n"
+"   ldr  x16, [x0, #96]\n"
+"   mov  sp, x16\n"
+"   ldp  d8,  d9,  [x0, #104]\n"
+"   ldp  d10, d11, [x0, #120]\n"
+"   ldp  d12, d13, [x0, #136]\n"
+"   ldp  d14, d15, [x0, #152]\n"
+"   cmp  w1, #0\n"
+"   csinc w0, w1, wzr, ne\n"
+"   ret\n"
+"   .size m2e_longjmp, .-m2e_longjmp\n"
+);
+"""
+
+
+def trap_stub_code(target):
+    """One stub per import the target cannot supply (--trap-missing).
+
+    Each stub hands its own name to m2e_trap_hit, which reports it and aborts,
+    so a code path nobody expected to run fails with the name of what it
+    wanted instead of jumping through a null pointer. Data imports bound this
+    way get the stub's address, which is fine as long as it is never read.
+    """
+    arm = target.endswith("arm64")
+    out = [r"""
+// ---- traps for imports the target lacks (--trap-missing) ------------------
+#include <stdlib.h>
+#include <string.h>
+#include <syslog.h>
+#include <unistd.h>
+
+__attribute__((visibility("hidden"), noreturn))
+void m2e_trap_hit(const char *name) {
+    static const char pre[] = "macho2elf: call to unconverted import ";
+    write(2, pre, sizeof pre - 1);
+    write(2, name, strlen(name));
+    write(2, "\n", 1);
+    syslog(LOG_ERR, "macho2elf: call to unconverted import %s", name);
+    abort();
+}
+
+__asm__(
+"   .text\n"
+"   .balign 4\n"
+"""]
+    strings = []
+    for i, (name, stub) in enumerate(sorted(TRAPPED.items())):
+        out.append(f'"   .global \\"{stub}\\"\\n"\n')
+        out.append(f'"   .type \\"{stub}\\", %function\\n"\n')
+        out.append(f'"\\"{stub}\\":\\n"\n')
+        if arm:
+            out.append(f'"   adrp x0, .Lm2e_tn_{i}\\n"\n')
+            out.append(f'"   add  x0, x0, :lo12:.Lm2e_tn_{i}\\n"\n')
+            out.append('"   b    m2e_trap_hit\\n"\n')
+        else:
+            out.append(f'"   lea  .Lm2e_tn_{i}(%rip), %rdi\\n"\n')
+            out.append('"   jmp  m2e_trap_hit\\n"\n')
+        strings.append(f'".Lm2e_tn_{i}: .asciz \\"{name}\\"\\n"\n')
+    out.append('"   .section .rodata\\n"\n')
+    out.extend(strings)
+    out.append(");\n")
+    return "".join(out)
+
+
+def target_exports(cc, libs):
+    """Every symbol the target's shared libraries export by default.
+
+    Each name is resolved through the compiler (-print-file-name), so the
+    answer comes from the same sysroot the link uses: the NDK's Bionic for
+    Android, the cross toolchain's glibc for Linux. glibc's libc.so is a
+    linker script naming the real objects; those are followed. Symbols that
+    exist only under a non-default version (glibc compat symbols such as
+    ftime) are left out, because an unversioned reference cannot bind to them.
+    """
+    import subprocess
+    names, seen = set(), []
+    for lib in libs:
+        path = subprocess.run([cc, f"-print-file-name={lib}"], capture_output=True,
+                              text=True).stdout.strip()
+        if not os.path.isabs(path) or not os.path.exists(path):
+            continue
+        for real in _shared_objects_behind(path):
+            elf = lief.ELF.parse(real)
+            if elf is None:
+                continue
+            seen.append(real)
+            for s in elf.exported_symbols:
+                if s.has_version and s.symbol_version.value & 0x8000:
+                    continue
+                names.add(s.name)
+    return names, seen
+
+
+def _shared_objects_behind(path):
+    with open(path, "rb") as f:
+        if f.read(4) == b"\x7fELF":
+            return [path]
+    import re
+    text = Path(path).read_text(errors="replace")
+    return [p for p in re.findall(r"(/\S+?\.so[.\d]*)", text) if os.path.exists(p)]
+
+
+def stub_provided_symbols(target):
+    """Names stubs.c defines for this target, which count as available."""
+    names = {"__maskrune", "__stack_chk_guard", "_macho2elf_rune_locale_stub"}
+    if target.endswith("arm64"):
+        names |= set(VARIADIC_SHIMS.values()) | set(ARM64_DARWIN_SHIMS.values())
+        names.add("__chkstk_darwin")
+    if target.startswith("android"):
+        names |= {"bzero", "ftime"}
+    return names
+
+
+# libc functions glibc exports but Bionic dropped (or only inlines), so the
+# converted .so's out-of-line calls would be unresolved on Android. Emitted
+# only for android-* targets; glibc provides both natively on Linux.
+BIONIC_COMPAT_STUBS = r"""
+// ---- Bionic compat shims (Android) ---------------------------------------
+#include <time.h>
+#include <string.h>
+
+// Bionic inlines bzero in <strings.h> and exports no out-of-line symbol.
+void bzero(void *s, size_t n) { memset(s, 0, n); }
+
+// Bionic removed the obsolete ftime(3). Layout matches Darwin's <sys/timeb.h>
+// (time_t time; unsigned short millitm; short timezone; short dstflag), which
+// is the ABI the engine was compiled against.
+struct m2e_timeb { long time; unsigned short millitm; short timezone; short dstflag; };
+int ftime(struct m2e_timeb *tp) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    if (tp) {
+        tp->time     = (long)ts.tv_sec;
+        tp->millitm  = (unsigned short)(ts.tv_nsec / 1000000);
+        tp->timezone = 0;
+        tp->dstflag  = 0;
+    }
+    return 0;
+}
+"""
+
+
+# arm64 variadic ABI bridge. Apple passes every variadic argument on the stack;
+# AAPCS64 (glibc) passes the first 8 GP / 8 FP variadic args in x2..x7 / v0..v7
+# and only spills the rest to the stack. A Darwin dylib therefore stores its
+# variadic args where glibc never reads them.
+#
+# Each trampoline below receives the call with Apple layout (named args in the
+# usual registers, ALL variadic args contiguous on the stack starting at the
+# incoming SP) and builds an AAPCS64 va_list whose register save areas are
+# marked empty (__gr_offs = __vr_offs = 0) and whose __stack field points at the
+# caller's variadic block. With both offsets non-negative, glibc's va_arg pulls
+# EVERY argument — integer, pointer, and floating point alike — straight from
+# that stack block, exactly matching Apple's layout. It then tail-calls the v*
+# variant of the libc function.
+#
+# AAPCS64 va_list layout (sys/_types/struct __va_list):
+#   +0  void *__stack;     next stack arg
+#   +8  void *__gr_top;    (unused here; __gr_offs >= 0)
+#   +16 void *__vr_top;    (unused here; __vr_offs >= 0)
+#   +24 int   __gr_offs;   0  -> no GP regs available, use __stack
+#   +28 int   __vr_offs;   0  -> no FP regs available, use __stack
+#
+# VAREG is the register holding the va_list argument — i.e. the one right after
+# the function's named args:
+# printf(fmt,...) -> vprintf(fmt, ap)                       ap in x1
+# sprintf/fprintf/sscanf(a,b,...) -> v*(a,b,ap)             ap in x2
+# snprintf(s,n,fmt,...) -> vsnprintf(s,n,fmt,ap)            ap in x3
+# __sprintf_chk(s,flag,slen,fmt,...) -> __vsprintf_chk(...) ap in x4
+# __snprintf_chk(s,maxlen,flag,slen,fmt,...) -> __vsnprintf_chk(...) ap in x5
+VARIADIC_TRAMPOLINES_ARM64 = r"""
+// ---- arm64 variadic ABI trampolines (see comment in macho2elf.py) --------
+// M2E_VA_TRAMPOLINE: the call itself is variadic, so the args sit on the
+// caller's stack (Apple puts ALL variadic args there). Build the 32-byte
+// va_list at [sp+16] with __stack = caller SP (= sp+48 after our frame) and the
+// register-area offsets zeroed so va_arg reads everything from the stack, then
+// place &va_list into VAREG and tail into the v* variant.
+#define M2E_VA_TRAMPOLINE(NAME, VFUNC, VAREG) \
+"   .global " #NAME "\n" \
+"   .type " #NAME ", %function\n" \
+#NAME ":\n" \
+"   sub  sp, sp, #48\n" \
+"   stp  x29, x30, [sp]\n" \
+"   mov  x29, sp\n" \
+"   add  x9, sp, #48\n" \
+"   str  x9, [sp, #16]\n" \
+"   stp  xzr, xzr, [sp, #24]\n" \
+"   str  wzr, [sp, #40]\n" \
+"   str  wzr, [sp, #44]\n" \
+"   add  " #VAREG ", sp, #16\n" \
+"   bl   " #VFUNC "\n" \
+"   ldp  x29, x30, [sp]\n" \
+"   add  sp, sp, #48\n" \
+"   ret\n" \
+"   .size " #NAME ", .-" #NAME "\n"
+
+// M2E_VL_SHIM: the function TAKES a va_list. On Apple arm64 a va_list is a bare
+// char* pointing straight at the stacked args; glibc's is a 5-field struct. So
+// the incoming VAREG already points at the args — wrap it into a struct (same
+// stack-only form) and replace VAREG with &struct before calling the real fn.
+#define M2E_VL_SHIM(NAME, VFUNC, VAREG) \
+"   .global " #NAME "\n" \
+"   .type " #NAME ", %function\n" \
+#NAME ":\n" \
+"   sub  sp, sp, #48\n" \
+"   stp  x29, x30, [sp]\n" \
+"   mov  x29, sp\n" \
+"   str  " #VAREG ", [sp, #16]\n" \
+"   stp  xzr, xzr, [sp, #24]\n" \
+"   str  wzr, [sp, #40]\n" \
+"   str  wzr, [sp, #44]\n" \
+"   add  " #VAREG ", sp, #16\n" \
+"   bl   " #VFUNC "\n" \
+"   ldp  x29, x30, [sp]\n" \
+"   add  sp, sp, #48\n" \
+"   ret\n" \
+"   .size " #NAME ", .-" #NAME "\n"
+
+__asm__(
+"   .text\n"
+"   .balign 4\n"
+M2E_VA_TRAMPOLINE(m2e_va_printf,      vprintf,        x1)
+M2E_VA_TRAMPOLINE(m2e_va_sprintf,     vsprintf,       x2)
+M2E_VA_TRAMPOLINE(m2e_va_fprintf,     vfprintf,       x2)
+M2E_VA_TRAMPOLINE(m2e_va_sscanf,      vsscanf,        x2)
+M2E_VA_TRAMPOLINE(m2e_va_snprintf,    vsnprintf,      x3)
+M2E_VA_TRAMPOLINE(m2e_va_sprintf_chk, __vsprintf_chk, x4)
+M2E_VA_TRAMPOLINE(m2e_va_snprintf_chk, __vsnprintf_chk, x5)
+M2E_VL_SHIM(m2e_vl_vfprintf,      vfprintf,       x2)
+M2E_VL_SHIM(m2e_vl_vsprintf_chk,  __vsprintf_chk, x4)
+M2E_VL_SHIM(m2e_vl_vsnprintf_chk, __vsnprintf_chk, x5)
+
+// __chkstk_darwin (Apple ___chkstk_darwin, underscore-stripped) — Apple's
+// arm64 large-frame stack-probe, emitted in prologues that allocate big
+// frames. It exists to fault guard pages in order; on Linux the kernel grows
+// the thread stack on demand, so the probe is unnecessary. A bare `ret`
+// satisfies the import and, crucially, clobbers no register (the caller passes
+// the frame size in x15 and still needs it for its own `sub sp, sp, x15`).
+"   .global __chkstk_darwin\n"
+"   .type __chkstk_darwin, %function\n"
+"__chkstk_darwin:\n"
+"   ret\n"
+"   .size __chkstk_darwin, .-__chkstk_darwin\n"
+);
+#undef M2E_VA_TRAMPOLINE
+#undef M2E_VL_SHIM
+"""
+
+
+ARCH_CONFIG = {
+    "x86_64": {
+        "elf_format": "elf64-x86-64",
+        "elf_arch":   "i386:x86-64",
+        "gcc":        "gcc",
+        # x86_64 libc++/libc++abi typically resolves cleanly at link time on host
+        "link_libs":  ["-lc", "-lm", "-lpthread", "-ldl",
+                       "-l:libc++.so.1", "-l:libc++abi.so.1"],
+        "page_size":  0x1000,
+        # Shared objects whose exports --trap-missing treats as available.
+        "export_libs": ["libc.so", "libm.so", "libpthread.so", "libdl.so",
+                        "libc++.so.1", "libc++abi.so.1"],
+    },
+    "arm64": {
+        "elf_format": "elf64-littleaarch64",
+        "elf_arch":   "aarch64",
+        "gcc":        "aarch64-linux-gnu-gcc",
+        # aarch64 sysroot may lack libc++ — generate empty stub .so files at
+        # build time so the linker can satisfy DT_NEEDED; ld.so resolves the
+        # real symbols at load time using the target system's libc++.
+        #
+        # The stubs MUST be linked under --no-as-needed: they export no symbols,
+        # so the default --as-needed would drop them from DT_NEEDED entirely.
+        # Then the converted .so would have no libc++ dependency at all, and at
+        # runtime its C++ symbols (operator new, __cxa_*, _Unwind_Resume via
+        # libc++abi -> libgcc_s) would be unresolved -> dlopen fails. Forcing
+        # the soname into DT_NEEDED makes ld.so pull the real libc++ chain.
+        "link_libs":  ["-Wl,--unresolved-symbols=ignore-all",
+                       "-lc", "-lm", "-lpthread", "-ldl",
+                       "-Wl,--no-as-needed",
+                       "{STUB}libc++.so.1", "{STUB}libc++abi.so.1",
+                       "-Wl,--as-needed"],
+        # Stub libs to generate (soname -> file). Generated at build time.
+        "stub_libs":  ["libc++.so.1", "libc++abi.so.1"],
+        # Apple arm64 dylibs use 16KB segment alignment; honor that.
+        "page_size":  0x4000,
+        # Shared objects whose exports --trap-missing treats as available.
+        "export_libs": ["libc.so", "libm.so", "libpthread.so", "libdl.so",
+                        "libc++.so.1", "libc++abi.so.1"],
+    },
+    # Android/arm64 (Bionic). Same CPU/ABI as linux arm64 — the high8 rebase
+    # fix, variadic trampolines, and __chkstk_darwin stub all apply unchanged
+    # (target ends in "arm64"). The differences are all OS/libc:
+    #   * NDK clang toolchain + Bionic sysroot (pass the sysroot via --cc-args
+    #     or a wrapper; --cc selects the compiler).
+    #   * Bionic has NO symbol versioning, folds pthread+libdl into libc, and
+    #     uses libc++_shared.so as the C++ runtime (ship it with the app).
+    #   * __errno_location -> __errno (see BIONIC_RENAMES).
+    # NOTE: prototype — builds against the NDK; not yet device-tested. Bionic's
+    # __vsprintf_chk availability should be confirmed (fall back to plain
+    # vsprintf in the _chk shims if absent).
+    "android-arm64": {
+        "elf_format": "elf64-littleaarch64",
+        "elf_arch":   "aarch64",
+        # NDK clang. The API-level suffix picks the Bionic sysroot; override
+        # with --cc to point at your NDK's aarch64-linux-android<API>-clang.
+        "gcc":        "aarch64-linux-android24-clang",
+        # -lunwind: Bionic only exports _Unwind_Resume from libc.so at API 34+;
+        # link the NDK's static libunwind so the .so is self-contained on older
+        # devices (this is what ordinary NDK C++ libs do). bzero/ftime, which
+        # Bionic dropped, are provided by BIONIC_COMPAT_STUBS in stubs.c.
+        "link_libs":  ["-Wl,--unresolved-symbols=ignore-all",
+                       "-lc", "-lm", "-ldl",
+                       "-Wl,--no-as-needed",
+                       "{STUB}libc++_shared.so",
+                       "-Wl,--as-needed",
+                       "-lunwind"],
+        "stub_libs":  ["libc++_shared.so"],
+        "page_size":  0x4000,
+        "export_libs": ["libc.so", "libm.so", "libdl.so", "libc++_shared.so"],
+    },
+    # Android/x86_64 (Bionic) — for x86_64 emulators. SIMPLER than arm64: Apple
+    # and Android x86_64 both follow the System V AMD64 ABI, so NONE of the
+    # arm64 shims apply (the variadic trampolines and __chkstk_darwin are gated
+    # on a target ending in "arm64"; __chkstk_darwin isn't even imported on
+    # x86_64). The Bionic bits still apply (they key on "android"): the libc++
+    # __ndk1 namespace rewrite, bzero/ftime compat stubs, __errno rename, and
+    # -lunwind for _Unwind_Resume. 4 KB pages like desktop x86_64.
+    #
+    # EXPERIMENTAL / KNOWN ISSUE: all 19 modules build and are symbol-complete,
+    # and eci.so loads + eciVersion works under Android x86_64 (verified on a
+    # KVM emulator, Android 14). But eciNew currently crashes: an engine object
+    # is reached uninitialised (NULL function-pointer call), i.e. an init step
+    # is skipped — uniquely on the x86_64+Bionic combination (arm64+Bionic and
+    # x86_64+glibc both work). Not a symbol/reloc problem (runtime resolution is
+    # clean). Root cause not yet pinned; needs single-stepping the stripped
+    # engine. arm64 is the validated, shipped target.
+    "android-x86_64": {
+        "elf_format": "elf64-x86-64",
+        "elf_arch":   "i386:x86-64",
+        "gcc":        "x86_64-linux-android24-clang",
+        "link_libs":  ["-Wl,--unresolved-symbols=ignore-all",
+                       "-lc", "-lm", "-ldl",
+                       "-Wl,--no-as-needed",
+                       "{STUB}libc++_shared.so",
+                       "-Wl,--as-needed",
+                       "-lunwind"],
+        "stub_libs":  ["libc++_shared.so"],
+        "page_size":  0x1000,
+        "export_libs": ["libc.so", "libm.so", "libdl.so", "libc++_shared.so"],
+    },
+}
+
+
+def detect_arch(binary):
+    """Return 'x86_64' or 'arm64' for the parsed Mach-O binary."""
+    cpu = str(binary.header.cpu_type)
+    if "X86_64" in cpu:
+        return "x86_64"
+    if "ARM64" in cpu:
+        return "arm64"
+    raise RuntimeError(f"Unsupported CPU type: {cpu}")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("input", help="Path to Mach-O dylib slice (x86_64 or arm64)")
+    ap.add_argument("-o", "--output", required=True, help="Output ELF .so path")
+    ap.add_argument("--workdir", default=None, help="Intermediate files directory")
+    ap.add_argument("--cc", default=None,
+                    help="Override the C compiler to link with (defaults are 'gcc' for "
+                         "x86_64 and 'aarch64-linux-gnu-gcc' for arm64).")
+    ap.add_argument("--os", default="linux", choices=["linux", "android"],
+                    help="Target OS/libc. 'linux' (glibc, default) or 'android' "
+                         "(Bionic, arm64 only — needs an NDK clang via --cc).")
+    ap.add_argument("--substitute", default=None, metavar="FILE",
+                    help="Hybrid build: replace listed functions in place with a "
+                         "jump to a reloq_-prefixed implementation. FILE has one "
+                         "'name<TAB>address<TAB>size' per line. Requires the "
+                         "implementations via --extra-object.")
+    ap.add_argument("--expose", default=None, metavar="FILE",
+                    help="Emit a global symbol at chosen internal addresses so "
+                         "hybrid replacements can name private vtables, tables "
+                         "and non-exported functions. FILE has one "
+                         "'symbol<TAB>address[<TAB>type]' per line; type "
+                         "defaults to @object.")
+    ap.add_argument("--extra-object", action="append", default=[], metavar="OBJ",
+                    help="Additional object or archive to link in; repeatable. "
+                         "Used to supply --substitute implementations.")
+    ap.add_argument("--trap-missing", action="store_true",
+                    help="Bind every import the target's libraries do not export "
+                         "to a stub that names it and aborts, instead of leaving "
+                         "it unresolved. Android's loader refuses a library with "
+                         "any unresolved symbol, so this is what makes an image "
+                         "that links Apple frameworks (an iOS daemon, say) "
+                         "loadable when only its libc-only part will run.")
+    ap.add_argument("--no-cxx-runtime", action="store_true",
+                    help="Leave libc++ out of DT_NEEDED and out of what "
+                         "--trap-missing counts as available, for an image with "
+                         "no C++ imports, so the target need not ship libc++.")
+    ap.add_argument("--skip-initializers", action="store_true",
+                    help="Do not run the image's initializers (__mod_init_func, "
+                         "__init_offsets) at load.")
+    ap.add_argument("--no-link", action="store_true", help="Stop after generating asm/lds")
+    ap.add_argument("--no-strip", action="store_true",
+                    help="Keep the non-dynamic .symtab (local .m2e_* labels). By default it "
+                         "is stripped: exports live in .dynsym, so the local symbol table is "
+                         "dead weight at runtime (tens of KB to ~100KB).")
+    args = ap.parse_args()
+
+    input_path = Path(args.input).resolve()
+    output_path = Path(args.output).resolve()
+    workdir = Path(args.workdir).resolve() if args.workdir else output_path.parent / f".m2e_{input_path.stem}"
+    workdir.mkdir(parents=True, exist_ok=True)
+    sections_dir = workdir / "sections"
+
+    print(f"[macho2elf] input:    {input_path}")
+    print(f"[macho2elf] output:   {output_path}")
+    print(f"[macho2elf] workdir:  {workdir}")
+
+    fat = lief.MachO.parse(str(input_path))
+    if not fat or len(fat) == 0:
+        print(f"ERROR: failed to parse {input_path}", file=sys.stderr)
+        sys.exit(1)
+    if len(fat) > 1:
+        slices = [str(fat.at(i).header.cpu_type) for i in range(len(fat))]
+        print(f"ERROR: {input_path} is a fat binary with {len(fat)} slices ({', '.join(slices)}).",
+              file=sys.stderr)
+        print("       Extract a single-arch slice first, e.g.",
+              file=sys.stderr)
+        print(f"         llvm-lipo -extract x86_64 {input_path} -output /tmp/slice.dylib",
+              file=sys.stderr)
+        sys.exit(1)
+    binary = fat.at(0)
+    arch = detect_arch(binary)
+    # The ARCH_CONFIG key combines OS + CPU. Linux uses the bare CPU name for
+    # back-compat ("x86_64", "arm64"); Android prefixes it ("android-arm64").
+    target = arch if args.os == "linux" else f"{args.os}-{arch}"
+    if target not in ARCH_CONFIG:
+        print(f"ERROR: no config for target '{target}' "
+              f"(os={args.os}, arch={arch}). Supported: {', '.join(sorted(ARCH_CONFIG))}.",
+              file=sys.stderr)
+        sys.exit(1)
+    arch_cfg = ARCH_CONFIG[target]
+    print(f"[macho2elf] arch:     {arch}")
+    print(f"[macho2elf] target:   {target}")
+    cc = args.cc or arch_cfg["gcc"]
+
+    global SKIP_INITIALIZERS, AVAILABLE_SYMBOLS
+    SKIP_INITIALIZERS = args.skip_initializers
+    for line in extend_section_layout(binary):
+        print(f"[macho2elf] generic section: {line}")
+    if args.trap_missing:
+        libs = [l for l in arch_cfg["export_libs"]
+                if not (args.no_cxx_runtime and "c++" in l)]
+        exported, libs_read = target_exports(cc, libs)
+        if not libs_read:
+            print(f"ERROR: --trap-missing found none of {arch_cfg['export_libs']} "
+                  f"through {cc} -print-file-name; cannot tell what the target "
+                  f"provides.", file=sys.stderr)
+            sys.exit(1)
+        AVAILABLE_SYMBOLS = exported | stub_provided_symbols(target)
+        # The unwinder is never a direct dependency: Android links it
+        # statically (-lunwind), and on Linux it arrives behind libc++abi.
+        if target.startswith("android") or not args.no_cxx_runtime:
+            AVAILABLE_SYMBOLS.add("_Unwind_Resume")
+        print(f"[macho2elf] trap-missing: {len(exported)} target exports from {len(libs_read)} libraries")
+
+    sections = extract_sections(binary, sections_dir)
+    print(f"[macho2elf] extracted {sum(1 for v in sections.values() if v['file']):d} non-empty sections")
+
+    exports = collect_exports(binary)
+    print(f"[macho2elf] exports: {len(exports)}")
+
+    imports, bindings_by_section = collect_bindings_per_section(binary, target)
+    total_bindings = sum(len(v) for v in bindings_by_section.values())
+    print(f"[macho2elf] imports: {len(imports)}, total binding sites: {total_bindings}")
+    for (seg, sect), bs in bindings_by_section.items():
+        print(f"    {seg},{sect}: {len(bs)} bindings")
+    if TRAPPED:
+        print(f"[macho2elf] trap-missing: {len(TRAPPED)} imports bound to trap stubs")
+
+    exposures = load_exposures(args.expose) if args.expose else []
+    if exposures:
+        print(f"[macho2elf] exposing {len(exposures)} internal address(es)")
+        for e in exposures:
+            print(f"    {e['addr']:#x} -> {e['name']} ({e['type']})")
+    substitutions = load_substitutions(args.substitute) if args.substitute else []
+    if substitutions:
+        print(f"[macho2elf] hybrid: substituting {len(substitutions)} function(s)")
+        for sub in substitutions:
+            print(f"    {sub['name']} @ {sub['addr']:#x} ({sub['size']} bytes) "
+                  f"-> {SUBST_PREFIX}{sub['name']}")
+        if not args.extra_object:
+            print("ERROR: --substitute needs --extra-object supplying the "
+                  f"{SUBST_PREFIX}* implementations, or the link will fail with "
+                  "undefined symbols.", file=sys.stderr)
+            sys.exit(1)
+
+    asm_path = workdir / "stub.s"
+    emitted, skipped = emit_assembly(binary, exports, imports, bindings_by_section,
+                                      sections, sections_dir, asm_path,
+                                      substitutions=substitutions,
+                                      exposures=exposures)
+    print(f"[macho2elf] assembly: {asm_path}  ({emitted} exports emitted, {skipped} skipped)")
+
+    lds_path = workdir / "link.lds"
+    emit_linker_script(binary, sections, lds_path, arch_cfg=arch_cfg)
+    print(f"[macho2elf] linker script: {lds_path}")
+
+    stubs_path = workdir / "stubs.c"
+    emit_runtime_stubs(stubs_path, target)
+    print(f"[macho2elf] runtime stubs: {stubs_path}")
+
+    if args.no_link:
+        print("[macho2elf] --no-link set; stopping before invocation of gcc")
+        return
+
+    import subprocess
+    print("[macho2elf] building...")
+
+    # Empty stub .so files for libs the cross-sysroot lacks (arm64 has no
+    # libc++/libc++abi).
+    stub_dir = workdir / "stub_libs"
+    if arch_cfg.get("stub_libs") and not args.no_cxx_runtime:
+        stub_dir.mkdir(parents=True, exist_ok=True)
+        empty_c = stub_dir / "_empty.c"
+        empty_c.write_text("/* stub */\n")
+        empty_o = stub_dir / "_empty.o"
+        subprocess.check_call([cc, "-c", "-fPIC", str(empty_c), "-o", str(empty_o)])
+        for soname in arch_cfg["stub_libs"]:
+            stub_so = stub_dir / soname
+            subprocess.check_call([
+                cc, "-shared", "-nostdlib", "-fPIC",
+                f"-Wl,-soname,{soname}",
+                str(empty_o),
+                "-o", str(stub_so),
+            ])
+
+    stubs_o = workdir / "stubs.o"
+    subprocess.check_call([cc, "-c", "-fPIC", "-O2", str(stubs_path), "-o", str(stubs_o)])
+
+    # cwd = sections_dir so the .incbin directives in stub.s resolve.
+    stub_o = workdir / "stub.o"
+    subprocess.check_call([cc, "-c", "-fPIC", "-xassembler", str(asm_path), "-o", str(stub_o)],
+                          cwd=sections_dir)
+
+    # Link. For x86_64 we resolve libc++ at link time (libc++.so.1 is on the
+    # host); for arm64 we leave C++ symbols unresolved at link time and let
+    # ld.so resolve them at load time on the target system.
+    # Expand {STUB} placeholders in link_libs with our generated stub paths
+    link_libs = []
+    for lib in arch_cfg["link_libs"]:
+        if args.no_cxx_runtime and ("c++" in lib):
+            continue
+        if lib.startswith("{STUB}"):
+            soname = lib[len("{STUB}"):]
+            link_libs.append(str(stub_dir / soname))
+        else:
+            link_libs.append(lib)
+
+    link_cmd = [
+        cc, "-shared", "-fPIC", "-nostdlib",
+        f"-Wl,-soname,{output_path.name}",
+        "-Wl,-z,noexecstack",
+        f"-Wl,-z,max-page-size={arch_cfg['page_size']:#x}",
+        *([] if args.no_strip else ["-Wl,-s"]),
+        "-T", str(lds_path),
+        str(stub_o), str(stubs_o),
+        *[str(Path(o).resolve()) for o in args.extra_object],
+        *link_libs,
+        "-o", str(output_path),
+    ]
+    print(f"[macho2elf] {' '.join(link_cmd)}")
+    subprocess.check_call(link_cmd)
+    print(f"[macho2elf] SUCCESS: {output_path}")
+
+
+if __name__ == "__main__":
+    main()
