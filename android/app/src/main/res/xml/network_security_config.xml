@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Apple serves the iOS 7 voice packs over plain HTTP only (HTTPS answers
+     404); every pack is checked against the SHA-1 in Apple's catalog. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">appldnld.apple.com</domain>
+    </domain-config>
+</network-security-config>

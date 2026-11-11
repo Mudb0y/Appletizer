@@ -4,3 +4,8 @@ build/
 local.properties
 *.apk
 /result*
+android/app/src/main/assets/voices/
+android/app/.cxx/
+android/app/build/
+android/build/
+android/.gradle/

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Appletizer</string>
+    <string name="voices_title">Appletizer voices</string>
+    <string name="compact">compact</string>
+    <string name="premium">premium</string>
+    <string name="row_compact">%1$s. Compact voice %2$s installed.</string>
+    <string name="row_premium_installed">Premium voice %1$s installed.</string>
+    <string name="row_premium_available">Premium voice %1$s available, %2$d megabytes.</string>
+    <string name="row_premium_downloading">Premium voice %1$s downloading, %2$d percent.</string>
+    <string name="row_premium_installing">Premium voice %1$s installing.</string>
+    <string name="row_premium_failed">Premium voice %1$s failed: %2$s.</string>
+    <string name="action_sample_compact">Hear compact voice</string>
+    <string name="action_sample_premium">Hear premium voice</string>
+    <string name="action_download">Download premium voice, %1$d megabytes</string>
+    <string name="action_cancel_download">Cancel download</string>
+    <string name="action_remove">Remove premium voice</string>
+    <string name="sample_text">This is %1$s.</string>
+    <string name="channel_downloads">Voice downloads</string>
+    <string name="notif_downloading">Downloading %1$s</string>
+    <string name="notif_installing">Installing %1$s</string>
+    <string name="notif_installed">%1$s installed</string>
+    <string name="notif_failed">%1$s failed: %2$s</string>
+    <string name="premium_voice_of">%1$s premium voice</string>
+</resources>
