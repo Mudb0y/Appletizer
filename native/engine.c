@@ -412,12 +412,13 @@ const atz_voice_info *atz_info(const atz_engine *e) { return &e->info; }
 
 static uint16_t clamp(int v, int lo, int hi) { return (uint16_t)(v < lo ? lo : v > hi ? hi : v); }
 
-int atz_set_prosody(atz_engine *e, int rate, int pitch, int volume) {
-    ve_param p[3];
+// Volume stays at the engine default: the voices are levelled for it, 100
+// drives them into clipping, and Android scales the stream volume itself.
+int atz_set_prosody(atz_engine *e, int rate, int pitch) {
+    ve_param p[2];
     set_value(&p[0], VE_PARAM_SPEECHRATE, clamp(rate, 50, 400));
     set_value(&p[1], VE_PARAM_PITCH, clamp(pitch, 50, 200));
-    set_value(&p[2], VE_PARAM_VOLUME, clamp(volume, 0, 100));
-    return (int)ve_ttsSetParamList(e->instance, p, 3);
+    return (int)ve_ttsSetParamList(e->instance, p, 2);
 }
 
 uint32_t atz_speak(atz_engine *e, const uint16_t *text, size_t len,

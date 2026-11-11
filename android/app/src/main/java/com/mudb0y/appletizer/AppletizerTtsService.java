@@ -124,7 +124,7 @@ public class AppletizerTtsService extends TextToSpeechService {
         speaking = e;
         int err;
         try {
-            err = e.speak(text, request.getSpeechRate(), request.getPitch(), 100, new Engine.Sink() {
+            err = e.speak(text, request.getSpeechRate(), request.getPitch(), new Engine.Sink() {
                 @Override
                 public boolean audio(byte[] pcm, int length) {
                     int max = cb.getMaxBufferSize();

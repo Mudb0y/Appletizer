@@ -73,11 +73,11 @@ static void on_word(void *user, uint32_t start, uint32_t end, uint32_t sample) {
 
 JNIEXPORT jint JNICALL
 Java_com_mudb0y_appletizer_Engine_speak(JNIEnv *env, jclass cls, jlong handle, jstring text,
-                                         jint rate, jint pitch, jint volume, jobject sink) {
+                                         jint rate, jint pitch, jobject sink) {
     (void)cls;
     atz_engine *e = (atz_engine *)(intptr_t)handle;
-    int r = atz_set_prosody(e, rate, pitch, volume);
-    if (r) log_android("setting rate, pitch or volume failed");
+    int r = atz_set_prosody(e, rate, pitch);
+    if (r) log_android("setting rate or pitch failed");
 
     jclass sc = (*env)->GetObjectClass(env, sink);
     speak_ctx s = {

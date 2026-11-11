@@ -33,8 +33,8 @@ final class Engine implements AutoCloseable {
     }
 
     /** Blocks until spoken or stopped; returns 0 or the engine's error code. */
-    int speak(String text, int rate, int pitch, int volume, Sink sink) {
-        return speak(handle, text, rate, pitch, volume, sink);
+    int speak(String text, int rate, int pitch, Sink sink) {
+        return speak(handle, text, rate, pitch, sink);
     }
 
     void stop() {
@@ -52,7 +52,7 @@ final class Engine implements AutoCloseable {
 
     private static native long open(String voiceDir, String commonDir, String[] info) throws IOException;
 
-    private static native int speak(long handle, String text, int rate, int pitch, int volume, Sink sink);
+    private static native int speak(long handle, String text, int rate, int pitch, Sink sink);
 
     private static native void stop(long handle);
 

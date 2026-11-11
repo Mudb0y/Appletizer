@@ -71,7 +71,7 @@ static size_t utf16(const char *s, uint16_t *out) {
 
 int main(int argc, char **argv) {
     const char *voice = NULL, *common = NULL, *out = "out.wav", *text = NULL;
-    int rate = 100, pitch = 100, volume = 100, verbose = 0;
+    int rate = 100, pitch = 100, verbose = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-v") && i + 1 < argc) voice = argv[++i];
         else if (!strcmp(argv[i], "-c") && i + 1 < argc) common = argv[++i];
@@ -97,8 +97,8 @@ int main(int argc, char **argv) {
     const atz_voice_info *info = atz_info(e);
     fprintf(stderr, "vesay: %s, %s, model %s, %d Hz, opened in %.2fs\n", info->voice,
             info->language, info->model, info->sample_rate, since(&t0));
-    if (rate != 100 || pitch != 100 || volume != 100) {
-        int r = atz_set_prosody(e, rate, pitch, volume);
+    if (rate != 100 || pitch != 100) {
+        int r = atz_set_prosody(e, rate, pitch);
         if (r) fprintf(stderr, "vesay: prosody: %#x\n", (unsigned)r);
     }
 
