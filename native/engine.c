@@ -423,12 +423,21 @@ int atz_set_prosody(atz_engine *e, int rate, int pitch) {
 
 uint32_t atz_speak(atz_engine *e, const uint16_t *text, size_t len,
                    atz_pcm_cb on_pcm, atz_word_cb on_word, void *user) {
+    // The engine rejects empty text, and fails the whole utterance on any
+    // UTF-16 surrogate, so one emoji would silence the sentence around it.
+    // Blanking surrogates keeps the indices that word marks refer to.
+    if (!len) return 0;
+    uint16_t *clean = malloc(len * sizeof *clean);
+    if (!clean) return VE_E_NOMEM;
+    for (size_t i = 0; i < len; i++)
+        clean[i] = text[i] >= 0xD800 && text[i] <= 0xDFFF ? ' ' : text[i];
     e->on_pcm = on_pcm;
     e->on_word = on_word;
     e->user = user;
     e->stopping = 0;
-    ve_intext in = { 0, (uint32_t)(len * 2), text };
+    ve_intext in = { 0, (uint32_t)(len * 2), clean };
     ve_err r = ve_ttsProcessText2Speech(e->instance, &in);
+    free(clean);
     e->on_pcm = NULL;
     e->on_word = NULL;
     if (r == VE_E_STOPPED || (r && e->stopping)) return 0;

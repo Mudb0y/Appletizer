@@ -27,7 +27,7 @@ void atz_set_log(atz_log_cb log);
  */
 atz_engine *atz_open(const char *voice_dir, const char *common_dir, char *err, size_t errlen);
 const atz_voice_info *atz_info(const atz_engine *e);
-/* rate 50..400, pitch 50..200, volume 0..100; 100/100/100 is neutral. */
+/* rate 50..400, pitch 50..200; 100 is neutral for both. */
 int atz_set_prosody(atz_engine *e, int rate, int pitch);
 /* Blocks until the text is spoken or atz_stop is called. 0, or the engine error. */
 uint32_t atz_speak(atz_engine *e, const uint16_t *text, size_t len,
