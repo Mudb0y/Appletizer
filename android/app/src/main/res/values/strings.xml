@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Appletizer</string>
-    <string name="voices_title">Appletizer voices</string>
     <string name="row_compact">%1$s. Compact voice %2$s installed.</string>
     <string name="row_premium_installed">Premium voice %1$s installed.</string>
     <string name="row_premium_available">Premium voice %1$s available, %2$d megabytes.</string>

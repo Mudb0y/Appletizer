@@ -47,6 +47,12 @@ final class VoiceStore {
         Locale locale() {
             return Locale.forLanguageTag(language);
         }
+
+        /** The language's own name for itself, then the voice's name. */
+        String sampleText() {
+            Locale loc = locale();
+            return loc.getDisplayName(loc) + ". " + name;
+        }
     }
 
     static final class Pack {

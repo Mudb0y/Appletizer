@@ -120,7 +120,6 @@ public class VoicesActivity extends Activity {
                 .show();
     }
 
-    /** Each voice says its language's own name, then its name. */
     private void sample(String lang, boolean premium) {
         VoiceStore.Voice v = premium
                 ? new VoiceStore.Voice(lang, store.premiumName(lang), true, store.premiumDir(lang))
@@ -128,8 +127,7 @@ public class VoicesActivity extends Activity {
         for (Voice av : tts.getVoices() == null ? new java.util.HashSet<Voice>() : tts.getVoices()) {
             if (av.getName().equals(v.id())) {
                 tts.setVoice(av);
-                Locale loc = v.locale();
-                tts.speak(loc.getDisplayName(loc) + ". " + v.name, TextToSpeech.QUEUE_FLUSH, null, "sample");
+                tts.speak(v.sampleText(), TextToSpeech.QUEUE_FLUSH, null, "sample");
                 return;
             }
         }
