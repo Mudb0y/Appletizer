@@ -38,6 +38,16 @@
         abiVersions = [ "x86_64" ];
       };
       emulatorSdk = "${emulatorPackages.androidsdk}/libexec/android-sdk";
+      # Android 17 on a 16 KB-page kernel, as some phones now ship; its own
+      # shell, since the image is a 2 GB download the 4 KB tests never need.
+      emulator16kPackages = pkgs.androidenv.composeAndroidPackages {
+        platformVersions = [ "37.0" ];
+        includeEmulator = true;
+        includeSystemImages = true;
+        systemImageTypes = [ "google_apis_ps16k" ];
+        abiVersions = [ "x86_64" ];
+      };
+      emulator16kSdk = "${emulator16kPackages.androidsdk}/libexec/android-sdk";
 
       python = pkgs.python3.withPackages (ps: [ ps.lief ]);
       cross = pkgs.pkgsCross.aarch64-multiplatform;
@@ -98,6 +108,12 @@
           packages = [ emulatorPackages.androidsdk pkgs.android-tools ];
           ANDROID_HOME = emulatorSdk;
           ANDROID_SDK_ROOT = emulatorSdk;
+        };
+
+        emulator16k = pkgs.mkShell {
+          packages = [ emulator16kPackages.androidsdk pkgs.android-tools ];
+          ANDROID_HOME = emulator16kSdk;
+          ANDROID_SDK_ROOT = emulator16kSdk;
         };
       };
     };

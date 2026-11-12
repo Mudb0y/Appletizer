@@ -33,6 +33,7 @@ using u16 = std::uint16_t;
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
 
+// The guest's page, which is also dynarmic's page-table granularity.
 constexpr u32 PAGE = 0x1000;
 constexpr u32 STACK = 0x40000000, STACK_SIZE = 0x100000;
 constexpr u32 HEAP = 0x50000000, HEAP_SIZE = 0x10000000;
@@ -50,6 +51,13 @@ constexpr u32 MARK_SIZE = 40, MAX_MARKS = 32;
 constexpr u32 PCM_BYTES = 2048;
 
 u32 align(u32 v, u32 a) { return (v + a - 1) & ~(a - 1); }
+
+// Some phones run 16 KB pages, and the kernel maps and protects only whole
+// pages of its own size, so every mmap and mprotect is sized by this.
+u32 host_page() {
+    static const u32 size = static_cast<u32>(sysconf(_SC_PAGESIZE));
+    return size;
+}
 
 class Guest final : public Dynarmic::A32::UserCallbacks {
 public:
@@ -84,7 +92,8 @@ public:
     }
 
     bool commit(u32 at, u32 size, int prot = PROT_READ | PROT_WRITE) {
-        if (mprotect(mem + at, size, prot)) return false;
+        u64 mask = host_page() - 1, lo = at & ~mask, hi = (u64(at) + size + mask) & ~mask;
+        if (mprotect(mem + lo, hi - lo, prot)) return false;
         for (u32 p = at; p < at + size; p += PAGE) (*pages)[p / PAGE] = mem + p;
         return true;
     }
@@ -631,14 +640,14 @@ u32 atzb::platform_tables() {
              struct stat st;
              if (fd < 0 || fstat(fd, &st)) { if (fd >= 0) close(fd); G.ret(E_NOTFOUND); return; }
              u32 len = static_cast<u32>(st.st_size);
-             u32 span = align(len ? len : 1, PAGE);
+             u32 span = align(len ? len : 1, host_page());
              if (files_top + span > FILES_END) { close(fd); G.ret(E_NOTFOUND); return; }
              u32 at = files_top;
              void *m = mmap(G.host(at), span, PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, 0);
              close(fd);
              if (m == MAP_FAILED) { G.ret(E_NOTFOUND); return; }
              for (u32 q = at; q < at + span; q += PAGE) (*G.pages)[q / PAGE] = G.host(q);
-             files_top += span + PAGE;
+             files_top += span + host_page();
              u32 h = G.alloc(4);
              maps[h] = {at, len};
              G.wr32(G.arg(3), h);
@@ -648,7 +657,7 @@ u32 atzb::platform_tables() {
              auto it = maps.find(G.arg(0));
              if (it == maps.end()) { G.ret(E_ARG); return; }
              auto [at, len] = it->second;
-             u32 span = align(len ? len : 1, PAGE);
+             u32 span = align(len ? len : 1, host_page());
              for (u32 q = at; q < at + span; q += PAGE) (*G.pages)[q / PAGE] = nullptr;
              mmap(G.host(at), span, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
              maps.erase(it);
