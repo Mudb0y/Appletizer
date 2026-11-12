@@ -18,8 +18,9 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * The updates row, then one row per language; a language opens its voices,
- * a voice opens what can be done with it.
+ * A crash-report row when Appletizer last ended badly, the updates row, then
+ * one row per language; a language opens its voices, a voice opens what can
+ * be done with it.
  */
 public class VoicesActivity extends Activity {
     private VoiceStore store;
@@ -27,6 +28,8 @@ public class VoicesActivity extends Activity {
     private final List<String> rows = new ArrayList<>();
     private TextToSpeech tts;
     private final Runnable refresh = () -> runOnUiThread(this::fill);
+    /** Read once per visit, not on every download tick. */
+    private boolean crashed;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -36,8 +39,10 @@ public class VoicesActivity extends Activity {
         adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, rows);
         list.setAdapter(adapter);
         list.setOnItemClickListener((parent, view, position, id) -> {
-            if (position == 0) startActivity(new Intent(this, UpdatesActivity.class));
-            else language(store.languages().get(position - 1));
+            int lead = crashed ? 2 : 1;
+            if (crashed && position == 0) startActivity(new Intent(this, CrashReportActivity.class));
+            else if (position == lead - 1) startActivity(new Intent(this, UpdatesActivity.class));
+            else language(store.languages().get(position - lead));
         });
         setContentView(list);
         fill();
@@ -54,6 +59,7 @@ public class VoicesActivity extends Activity {
         super.onResume();
         DownloadService.addListener(refresh);
         Updater.addListener(refresh);
+        crashed = CrashReports.count(this) > 0;
         fill();
     }
 
@@ -76,6 +82,7 @@ public class VoicesActivity extends Activity {
 
     private void fill() {
         rows.clear();
+        if (crashed) rows.add(getString(R.string.crash_row));
         rows.add(Updater.summary(this));
         for (String lang : store.languages()) {
             List<VoiceStore.Voice> voices = store.voices(lang);

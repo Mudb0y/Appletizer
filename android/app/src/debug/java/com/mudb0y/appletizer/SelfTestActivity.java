@@ -19,7 +19,10 @@ import java.io.File;
  * under AppletizerTest. With --es download PACK_KEY instead, it downloads and
  * installs that voice pack and reports when it is in place. With --es
  * update-base URL, the updater reads URL/stable/update.json and
- * URL/dev/update.json instead of GitHub; an empty URL undoes it.
+ * URL/dev/update.json instead of GitHub; an empty URL undoes it. With
+ * --es crash java or --es crash native, the process dies that way, for
+ * testing crash reports, and --es report FILE writes the crash report that
+ * the app would share into FILE.
  */
 public class SelfTestActivity extends Activity {
     private static final String TAG = "AppletizerTest";
@@ -30,6 +33,32 @@ public class SelfTestActivity extends Activity {
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
+        String crash = getIntent().getStringExtra("crash");
+        if ("java".equals(crash)) throw new IllegalStateException("self-test crash");
+        if ("native".equals(crash)) {
+            // A real fault inside Appletizer's own library: stopping an engine that does not exist.
+            try {
+                System.loadLibrary("appletizer");
+                java.lang.reflect.Method stop = Engine.class.getDeclaredMethod("stop", long.class);
+                stop.setAccessible(true);
+                stop.invoke(null, 0xdead0000L);
+            } catch (ReflectiveOperationException e) {
+                Log.e(TAG, "FAIL " + e);
+            }
+        }
+        String report = getIntent().getStringExtra("report");
+        if (report != null) {
+            new Thread(() -> {
+                try (java.io.FileWriter w = new java.io.FileWriter(new File(getExternalFilesDir(null), report))) {
+                    w.write(CrashReports.report(getApplicationContext()));
+                    Log.i(TAG, "DONE report " + report);
+                } catch (java.io.IOException e) {
+                    Log.e(TAG, "FAIL report: " + e);
+                }
+                runOnUiThread(this::finish);
+            }).start();
+            return;
+        }
         String base = getIntent().getStringExtra("update-base");
         if (base != null) {
             Updater.prefs(this).edit().putString("testBase", base.isEmpty() ? null : base)

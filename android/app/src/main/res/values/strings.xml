@@ -74,4 +74,20 @@
     <string name="notif_update_failed">Appletizer update failed: %1$s</string>
     <string name="notif_update_confirm">Confirm the Appletizer update</string>
     <string name="notif_updated">Appletizer updated to %1$s</string>
+    <string name="channel_problems">Problem reports</string>
+    <string name="crash_title">Appletizer stopped unexpectedly</string>
+    <string name="crash_row">Appletizer stopped unexpectedly. Activate to share a report.</string>
+    <string name="notif_crash_text">Open to share a report that helps fix it.</string>
+    <plurals name="crash_intro">
+        <item quantity="one">Android ended Appletizer abnormally once since the last report. The report below gives the reason, the phone model, its Android version and Appletizer\'s own recent log. Nothing leaves the phone unless you share or copy it.</item>
+        <item quantity="other">Android ended Appletizer abnormally %1$d times since the last report. The report below gives the reasons, the phone model, its Android version and Appletizer\'s own recent log. Nothing leaves the phone unless you share or copy it.</item>
+    </plurals>
+    <string name="crash_none">Appletizer has not stopped unexpectedly since the last report. The report below still describes the phone and Appletizer\'s recent log.</string>
+    <string name="crash_share">Share the report</string>
+    <string name="crash_copy">Copy the report</string>
+    <string name="crash_copied">Report copied</string>
+    <string name="crash_dismiss">Dismiss</string>
+    <string name="crash_report_heading">Report</string>
+    <string name="crash_preparing">Preparing the report.</string>
+    <string name="crash_subject">Appletizer crash report</string>
 </resources>
