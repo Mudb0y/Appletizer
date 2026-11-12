@@ -29,6 +29,8 @@ android {
             cmake {
                 // NDK r27 still links with 4 KB segment alignment unless asked.
                 arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+                // The iOS 10 engine is partly C++; this also packages libc++_shared.so.
+                arguments += "-DANDROID_STL=c++_shared"
             }
         }
     }

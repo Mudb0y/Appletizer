@@ -70,7 +70,7 @@ static size_t utf16(const char *s, uint16_t *out) {
 }
 
 int main(int argc, char **argv) {
-    const char *engine = "libvoiced.so", *voice = NULL, *common = NULL, *out = "out.wav", *text = NULL;
+    const char *engine = "libve151.so", *voice = NULL, *common = NULL, *out = "out.wav", *text = NULL;
     int rate = 100, pitch = 100, verbose = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-e") && i + 1 < argc) engine = argv[++i];

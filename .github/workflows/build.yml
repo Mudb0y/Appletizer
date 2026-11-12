@@ -23,7 +23,7 @@ jobs:
           fetch-depth: 0
 
       - name: Make room
-        # The firmware passes through about 4.5 GB of scratch space, and the
+        # iOS 15's root filesystem alone is 5 GB on its way through, and the
         # Nix store holds its own Android SDK, so the runner's copy can go.
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
 
@@ -32,7 +32,7 @@ jobs:
       - name: Cache firmware
         uses: actions/cache@v6
         with:
-          path: work/ipsw/iPhone6,1_7.1.2/rootfs
+          path: work/firmware
           key: firmware-${{ hashFiles('scripts/fetch-firmware.sh') }}
 
       - name: Cache Gradle

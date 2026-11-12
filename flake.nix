@@ -41,6 +41,9 @@
 
       python = pkgs.python3.withPackages (ps: [ ps.lief ]);
       cross = pkgs.pkgsCross.aarch64-multiplatform;
+      # The iOS 10 engine needs a C++ runtime on the Linux test bench; the
+      # native aarch64 build comes from the binary cache, unlike a cross one.
+      aarch64LibCxx = nixpkgs.legacyPackages.aarch64-linux.llvmPackages.libcxx;
     in
     {
       devShells.${system} = {
@@ -57,6 +60,7 @@
             pkgs.whisper-cpp
             pkgs._7zz
             pkgs.xpwn
+            pkgs.lzfse
           ];
 
           # android-tools brings its own Python; name the one with LIEF outright.
@@ -69,6 +73,9 @@
           GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${sdk}/build-tools/${buildToolsVersion}/aapt2";
           # Cross glibc's loader and libraries, for qemu-aarch64 -L.
           AARCH64_SYSROOT = "${cross.stdenv.cc.libc}";
+          AARCH64_LIBCXX = "${aarch64LibCxx}/lib";
+          # APFS images from iOS 10.3 on keep many files LZFSE-compressed.
+          LIBLZFSE = "${pkgs.lzfse}/lib/liblzfse.so";
         };
 
         emulator = pkgs.mkShell {

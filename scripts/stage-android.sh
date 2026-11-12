@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
-# Prepare everything the Android build takes from Apple: the converted engine
-# and the built-in compact voices from the 7.1.2 firmware. Run inside
-# `nix develop`, after the firmware is extracted under work/.
+# Prepare everything the Android build takes from Apple: both converted engines
+# and each engine's built-in voices. Run inside `nix develop`, after
+# fetch-firmware.sh.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
-tts=${TTS_RESOURCES:-$root/work/ipsw/iPhone6,1_7.1.2/rootfs/Sochi11D257.N51OS/System/Library/PrivateFrameworks/VoiceServices.framework/TTSResources}
-assets=$root/android/app/src/main/assets
+fw=$root/work/firmware
+assets=$root/android/app/src/main/assets/voices
 
 "$root/scripts/build-engine.sh" android-arm64
 
-echo "stage-android: copying compact voices"
-rm -rf "$assets/voices"
-mkdir -p "$assets/voices"
-for dir in "$tts"/*/; do
-    name=$(basename "$dir")
-    [ "$name" = Tones ] && continue
-    cp -r "$dir" "$assets/voices/$name"
+rm -rf "$assets"
+for pair in ve131:ios7 ve151:ios15; do
+    gen=${pair%%:*} tts=$fw/${pair#*:}/TTSResources
+    mkdir -p "$assets/$gen"
+    for dir in "$tts"/*/; do
+        name=$(basename "$dir")
+        [ "$name" = Tones ] && continue
+        cp -r "$dir" "$assets/$gen/$name"
+    done
+    (cd "$assets/$gen" && ls -d */ | tr -d / | grep -vx common) > "$assets/$gen/index.txt"
+    echo "stage-android: $gen: $(wc -l < "$assets/$gen/index.txt") built-in voices"
 done
-(cd "$assets/voices" && ls -d */ | tr -d / | grep -vx common) > "$assets/voices/index.txt.tmp"
-mv "$assets/voices/index.txt.tmp" "$assets/voices/index.txt"
-echo "stage-android: $(wc -l < "$assets/voices/index.txt") languages, $(du -sh "$assets/voices" | cut -f1)"
+echo "stage-android: $(du -sh "$assets" | cut -f1) of voices"
