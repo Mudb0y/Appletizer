@@ -1355,10 +1355,11 @@ __asm__(
     return "".join(out)
 
 
-def target_exports(cc, libs):
+def target_exports(cc, libs, lib_dirs=()):
     """Every symbol the target's shared libraries export by default.
 
-    Each name is resolved through the compiler (-print-file-name), so the
+    Each name is looked up in lib_dirs first, then resolved through the
+    compiler (-print-file-name), so the
     answer comes from the same sysroot the link uses: the NDK's Bionic for
     Android, the cross toolchain's glibc for Linux. glibc's libc.so is a
     linker script naming the real objects; those are followed. Symbols that
@@ -1368,8 +1369,10 @@ def target_exports(cc, libs):
     import subprocess
     names, seen = set(), []
     for lib in libs:
-        path = subprocess.run([cc, f"-print-file-name={lib}"], capture_output=True,
-                              text=True).stdout.strip()
+        path = next((os.path.join(d, lib) for d in lib_dirs
+                     if os.path.exists(os.path.join(d, lib))), None)
+        path = path or subprocess.run([cc, f"-print-file-name={lib}"], capture_output=True,
+                                      text=True).stdout.strip()
         if not os.path.isabs(path) or not os.path.exists(path):
             continue
         for real in _shared_objects_behind(path):
@@ -1686,6 +1689,9 @@ def main():
                          "any unresolved symbol, so this is what makes an image "
                          "that links Apple frameworks (an iOS daemon, say) "
                          "loadable when only its libc-only part will run.")
+    ap.add_argument("--lib-dir", action="append", default=[], metavar="DIR",
+                    help="Look here first for the target libraries --trap-missing "
+                         "reads, e.g. a C++ runtime a cross compiler does not know.")
     ap.add_argument("--no-cxx-runtime", action="store_true",
                     help="Leave libc++ out of DT_NEEDED and out of what "
                          "--trap-missing counts as available, for an image with "
@@ -1745,7 +1751,7 @@ def main():
     if args.trap_missing:
         libs = [l for l in arch_cfg["export_libs"]
                 if not (args.no_cxx_runtime and "c++" in l)]
-        exported, libs_read = target_exports(cc, libs)
+        exported, libs_read = target_exports(cc, libs, args.lib_dir)
         if not libs_read:
             print(f"ERROR: --trap-missing found none of {arch_cfg['export_libs']} "
                   f"through {cc} -print-file-name; cannot tell what the target "
