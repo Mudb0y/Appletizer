@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fetch the pieces the build takes from Apple into work/firmware, each checked
 # against pinned hashes. Run inside `nix develop`; parts already in place stay.
+#   ios6   iOS 6.1.4, iPhone5,2: voiced (32-bit vauto_tts) and its built-in voices
 #   ios7   iOS 7.1.2, iPhone6,1: voiced (VE 1.3.1) and its built-in voices
 #   ios10  iOS 10.3.3, iPhone9,1: TTSSpeechBundle, the VE 1.5.1 engine
 #   ios15  iOS 15.8.8, iPhone9,1: the last built-in voices VE 1.5.1 shipped with
@@ -30,6 +31,22 @@ place() {
     rm -rf "$tmp"/*
     echo "fetch-firmware: $fw/$1"
 }
+
+if [ "$(file_hash "$fw/ios6/voiced")" != 7718ebca2ed064e573f1d2bbc145d825f3f734f13fe18c0f368b8d77f1f3024e ] ||
+   [ "$(tree_hash "$fw/ios6/TTSResources")" != f7453a0a7fe6514d82b3aba031e7844c29d5d1bd789b5995a8804bbb288ea263 ]; then
+    echo "fetch-firmware: downloading iOS 6.1.4"
+    rootfs https://secure-appldnld.apple.com/iOS6.1/091-3423.20130502.Tr3Lz/iPhone5,2_6.1.4_10B350_Restore.ipsw 048-2944-001.dmg
+    dmg extract "$tmp/rootfs.dmg" "$tmp/rootfs.img" \
+        -k 26636364204d5705d7aace7293e740616323eae2fd6c2d5aa7915b2ce7b22fa4ad8f7669 > /dev/null
+    rm "$tmp/rootfs.dmg"
+    7zz x -y -snl -bso0 -bsp0 -o"$tmp/x" "$tmp/rootfs.img" "BrightonMaps10B350.N42OS/$vs/*" 2> /dev/null || true
+    mkdir "$tmp/out"
+    mv "$tmp/x/BrightonMaps10B350.N42OS/$vs/Support/voiced" "$tmp/x/BrightonMaps10B350.N42OS/$vs/TTSResources" "$tmp/out/"
+    [ "$(file_hash "$tmp/out/voiced")" = 7718ebca2ed064e573f1d2bbc145d825f3f734f13fe18c0f368b8d77f1f3024e ] &&
+    [ "$(tree_hash "$tmp/out/TTSResources")" = f7453a0a7fe6514d82b3aba031e7844c29d5d1bd789b5995a8804bbb288ea263 ] ||
+        { echo "fetch-firmware: iOS 6.1.4 files do not match the pinned hashes" >&2; exit 1; }
+    place ios6
+fi
 
 if [ "$(file_hash "$fw/ios7/voiced")" != c612358d842b23ffb0de478d19808ee29a9050cd45eb1ab362299e3d59843d5c ] ||
    [ "$(tree_hash "$fw/ios7/TTSResources")" != 5ba0f3034f7cb917c923d0b264dc745efcdd772eebfad03ce231f714dfbaeb10 ]; then

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Appletizer</string>
+    <string name="era_vauto">iOS 5 and 6</string>
     <string name="era_ve131">iOS 7</string>
     <string name="era_ve151">iOS 9 to 15</string>
     <string name="footprint_compact">compact</string>

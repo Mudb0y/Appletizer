@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build both engines for arm64 Linux and have every built-in voice speak on its
-# engine under qemu, plus the texts that once failed whole utterances. Run
-# inside `nix develop`, after fetch-firmware.sh.
+# Build the engines and have every built-in voice speak on its own engine,
+# plus the texts that once failed whole utterances. Run inside `nix develop`,
+# after fetch-firmware.sh.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 fw=$root/work/firmware
@@ -11,14 +11,19 @@ trap 'rm -rf "$out"' EXIT
 
 "$root/scripts/build-engine.sh" linux-arm64 > /dev/null
 
-# vesay ENGINE VOICES LANG TEXT: run vesay, printing its output.
+# vesay ENGINE VOICES LANG TEXT: run vesay, printing its output. The iOS 5/6
+# bridge is built for this machine; the converted engines run under qemu.
 vesay() {
-    LD_LIBRARY_PATH=$AARCH64_LIBCXX qemu-aarch64 -L "$AARCH64_SYSROOT" "$build/vesay" \
-        -e "$build/$1" -v "$2/$3" -c "$2/common" -o "$out/out.wav" "$4" 2>&1
+    if [ "$1" = libvauto.so ]; then
+        "$build/host/vesay" -e "$build/host/$1" -v "$2/$3" -c "$2/common" -o "$out/out.wav" "$4" 2>&1
+    else
+        LD_LIBRARY_PATH=$AARCH64_LIBCXX qemu-aarch64 -L "$AARCH64_SYSROOT" "$build/vesay" \
+            -e "$build/$1" -v "$2/$3" -c "$2/common" -o "$out/out.wav" "$4" 2>&1
+    fi
 }
 
 failed=0 voices=0
-for pair in "libve131.so:$fw/ios7/TTSResources" "libve151.so:$fw/ios15/TTSResources"; do
+for pair in "libvauto.so:$fw/ios6/TTSResources" "libve131.so:$fw/ios7/TTSResources" "libve151.so:$fw/ios15/TTSResources"; do
     engine=${pair%%:*} tts=${pair#*:}
     for dir in "$tts"/*/; do
         lang=$(basename "$dir")
@@ -39,4 +44,4 @@ for pair in "libve131.so:$fw/ios7/TTSResources" "libve151.so:$fw/ios15/TTSResour
     fi
 done
 [ "$failed" = 0 ] || exit 1
-echo "smoke-test: $voices voices spoke on two engines, empty and emoji text ok"
+echo "smoke-test: $voices voices spoke on three engines, empty and emoji text ok"

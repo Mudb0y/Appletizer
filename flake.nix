@@ -44,6 +44,18 @@
       # The iOS 10 engine needs a C++ runtime on the Linux test bench; the
       # native aarch64 build comes from the binary cache, unlike a cross one.
       aarch64LibCxx = nixpkgs.legacyPackages.aarch64-linux.llvmPackages.libcxx;
+
+      # dynarmic runs the 32-bit iOS 5/6 engine. Its cross builds want the
+      # dependencies it bundles, which nixpkgs' copy of its source leaves out,
+      # so they are put back from nixpkgs' own pinned sources.
+      dynarmicSrc = pkgs.runCommand "dynarmic-src-${pkgs.dynarmic.version}" { } ''
+        cp -r --no-preserve=mode ${pkgs.dynarmic.src} $out
+        rm -rf $out/externals/fmt $out/externals/mcl $out/externals/oaknut $out/externals/robin-map
+        cp -r --no-preserve=mode ${pkgs.fmt.src} $out/externals/fmt
+        cp -r --no-preserve=mode ${pkgs.mcl-cpp-utility-lib.src} $out/externals/mcl
+        cp -r --no-preserve=mode ${pkgs.oaknut.src} $out/externals/oaknut
+        cp -r --no-preserve=mode ${pkgs.robin-map.src} $out/externals/robin-map
+      '';
     in
     {
       devShells.${system} = {
@@ -76,6 +88,10 @@
           AARCH64_LIBCXX = "${aarch64LibCxx}/lib";
           # APFS images from iOS 10.3 on keep many files LZFSE-compressed.
           LIBLZFSE = "${pkgs.lzfse}/lib/liblzfse.so";
+          DYNARMIC_SRC = "${dynarmicSrc}";
+          BOOST_INCLUDE = "${pkgs.boost.dev}/include";
+          # The host build of dynarmic, for testing the iOS 5/6 bridge here.
+          HOST_DYNARMIC = "${pkgs.dynarmic}";
         };
 
         emulator = pkgs.mkShell {

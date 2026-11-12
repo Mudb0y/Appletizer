@@ -47,8 +47,10 @@ final class VoiceStore {
 
     static final Generation VE151 = new Generation("ve151", "libve151.so", "ios15", R.string.era_ve151);
     static final Generation VE131 = new Generation("ve131", "libve131.so", "ios7", R.string.era_ve131);
+    /** The 32-bit iOS 5/6 engine, run inside an emulator by libvauto.so. */
+    static final Generation VAUTO = new Generation("vauto", "libvauto.so", "ios6", R.string.era_vauto);
     /** Newest first, which is also the order voices are preferred in. */
-    static final List<Generation> GENERATIONS = Arrays.asList(VE151, VE131);
+    static final List<Generation> GENERATIONS = Arrays.asList(VE151, VE131, VAUTO);
 
     static Generation generation(String id) {
         for (Generation g : GENERATIONS)

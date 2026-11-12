@@ -2,7 +2,8 @@
 the app reads, each tagged with the engine its data runs on.
 Usage: make-catalog.py VOCALIZER.xml COMBINED.xml OUT.json
 
-  ve131  VoiceServicesVocalizerVoice FormatVersion 5: iOS 7.1's premium voices
+  vauto  VoiceServicesVocalizerVoice FormatVersion 4: iOS 6's premium voices
+  ve131  FormatVersion 5: iOS 7.1's premium voices
   ve151  FormatVersion 7, compatibility 6: what iOS 9.3 to 15 download
          CombinedVocalizerVoices: the further voices iOS 10 to 15 offer
 
@@ -93,7 +94,9 @@ vocalizer = plistlib.load(open(sys.argv[1], "rb"))["Assets"]
 combined = plistlib.load(open(sys.argv[2], "rb"))["Assets"]
 packs = []
 for a in vocalizer:
-    if a.get("FormatVersion") == "5":
+    if a.get("FormatVersion") == "4":
+        packs.append(entry("vauto", a, a["Language"]))
+    elif a.get("FormatVersion") == "5":
         packs.append(entry("ve131", a, a["Language"]))
     elif a.get("FormatVersion") == "7" and str(a.get("_CompatibilityVersion")) == "6":
         packs.append(entry("ve151", a, a["Languages"][0]))

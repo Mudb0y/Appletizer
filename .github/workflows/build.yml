@@ -35,6 +35,12 @@ jobs:
           path: work/firmware
           key: firmware-${{ hashFiles('scripts/fetch-firmware.sh') }}
 
+      - name: Cache dynarmic
+        uses: actions/cache@v6
+        with:
+          path: work/build/dynarmic-android
+          key: dynarmic-${{ hashFiles('flake.lock', 'flake.nix') }}
+
       - name: Cache Gradle
         uses: actions/cache@v6
         with:

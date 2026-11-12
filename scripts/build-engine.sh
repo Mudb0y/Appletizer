@@ -45,4 +45,48 @@ if [ "$target" = linux-arm64 ]; then
     $cc -O2 -Wall -Wextra -o "$out/vesay" "$root/native/vesay.c" "$root/native/engine.c" \
         -Wl,-rpath,'$ORIGIN' -ldl -lpthread
 fi
+
+# The iOS 5/6 engine is 32-bit ARM, which arm64-only phones cannot run, so
+# libvauto.so carries it as an image and runs it inside dynarmic.
+echo "build-engine: building libvauto.so for $target"
+"$M2E_PYTHON" -I "$root/scripts/armv7-image.py" "$fw/ios6/voiced" "$out/vauto.img" > /dev/null
+bridge=("$root/native/vauto/bridge.cpp" -x assembler-with-cpp "-DIMAGE=\"$out/vauto.img\""
+        "$root/native/vauto/image.S" -x none)
+case $target in
+android-arm64)
+    # Kept between builds, since dynarmic takes minutes; rebuilt when its source changes.
+    dyn=$root/work/build/dynarmic-android
+    cm=$ANDROID_HOME/cmake/3.22.1/bin
+    if [ "$(cat "$dyn/.source" 2> /dev/null)" != "$DYNARMIC_SRC" ]; then
+        echo "build-engine: building dynarmic for $target"
+        rm -rf "$dyn"
+        { "$cm/cmake" -S "$DYNARMIC_SRC" -B "$dyn" -G Ninja -DCMAKE_MAKE_PROGRAM="$cm/ninja" \
+              -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=26 -DANDROID_STL=c++_shared \
+              -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+              -DDYNARMIC_USE_BUNDLED_EXTERNALS=ON -DDYNARMIC_TESTS=OFF -DDYNARMIC_WARNINGS_AS_ERRORS=OFF \
+              -DDYNARMIC_USE_PRECOMPILED_HEADERS=OFF -DBoost_INCLUDE_DIR="$BOOST_INCLUDE" -DBoost_NO_BOOST_CMAKE=ON \
+              -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH &&
+          "$cm/cmake" --build "$dyn" -j"$(nproc)"; } > "$out/dynarmic.log" 2>&1 ||
+            { tail -20 "$out/dynarmic.log" >&2; exit 1; }
+        echo "$DYNARMIC_SRC" > "$dyn/.source"
+    fi
+    # Only atzb_* is exported; the static C++ runtime and dynarmic stay private.
+    "$ndk_bin/aarch64-linux-android26-clang++" -std=c++20 -O2 -fPIC -shared -Wall -Wextra \
+        -I"$root/native" -I"$DYNARMIC_SRC/src" -I"$DYNARMIC_SRC/externals/mcl/include" -I"$BOOST_INCLUDE" \
+        "${bridge[@]}" "$dyn/src/dynarmic/libdynarmic.a" "$dyn/externals/mcl/src/libmcl.a" \
+        "$dyn/externals/fmt/libfmt.a" -static-libstdc++ \
+        -Wl,--version-script="$root/native/vauto/exports.map" -Wl,--gc-sections \
+        -Wl,-z,max-page-size=16384 -Wl,-s -o "$libs/libvauto.so"
+    ;;
+linux-arm64)
+    # Tested on this machine's own architecture, where nixpkgs builds dynarmic.
+    mkdir -p "$out/host"
+    c++ -std=c++20 -O2 -fPIC -shared -Wall -Wextra -I"$root/native" -I"$HOST_DYNARMIC/include" \
+        "${bridge[@]}" -L"$HOST_DYNARMIC/lib" -ldynarmic -Wl,-rpath,"$HOST_DYNARMIC/lib" \
+        -o "$out/host/libvauto.so"
+    cc -O2 -Wall -Wextra -o "$out/host/vesay" "$root/native/vesay.c" "$root/native/engine.c" \
+        -Wl,-rpath,'$ORIGIN' -ldl -lpthread
+    ;;
+esac
 echo "build-engine: $(ls "$libs"/*.so | tr '\n' ' ')"

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "engine.h"
+#include "bridge.h"
 #include "ve.h"
 
 #include <dlfcn.h>
@@ -211,6 +212,12 @@ typedef struct {
     __typeof__(ve_ttsProcessText2Speech) *speak;
     __typeof__(ve_ttsStop) *stop;
     __typeof__(ve_ttsResourceLoad) *load_resource;
+    /* Set instead of the above for an engine run inside an emulator. */
+    __typeof__(atzb_open) *bridge_open;
+    __typeof__(atzb_set_prosody) *bridge_prosody;
+    __typeof__(atzb_speak) *bridge_speak;
+    __typeof__(atzb_stop) *bridge_stop;
+    __typeof__(atzb_close) *bridge_close;
 } ve_api;
 
 #define MAX_LIBS 8
@@ -241,6 +248,13 @@ static const ve_api *load_api(const char *path, char *err, size_t errlen) {
         free(a.path); \
         goto out; \
     }
+    if ((*(void **)&a.bridge_open = dlsym(dl, "atzb_open"))) {
+        SYM(bridge_prosody, "atzb_set_prosody")
+        SYM(bridge_speak, "atzb_speak")
+        SYM(bridge_stop, "atzb_stop")
+        SYM(bridge_close, "atzb_close")
+        goto loaded;
+    }
     SYM(initialize, "ve_ttsInitialize")
     SYM(uninitialize, "ve_ttsUnInitialize")
     SYM(open, "ve_ttsOpen")
@@ -251,6 +265,7 @@ static const ve_api *load_api(const char *path, char *err, size_t errlen) {
     SYM(stop, "ve_ttsStop")
     SYM(load_resource, "ve_ttsResourceLoad")
 #undef SYM
+loaded:
     libs[nlibs] = a;
     found = &libs[nlibs++];
 out:
@@ -262,6 +277,7 @@ out:
 
 struct atz_engine {
     const ve_api *ve;
+    atzb *bridge;
     data_class dc;
     char *voice_dir, *common_dir;
     char *broker;              /* broker.hdr text handed to the engine */
@@ -378,6 +394,14 @@ atz_engine *atz_open(const char *engine, const char *voice_dir, const char *comm
     atz_engine *e = calloc(1, sizeof *e);
     if (!e) return NULL;
     e->ve = ve;
+    if (ve->bridge_open) {
+        e->bridge = ve->bridge_open(voice_dir, common_dir, &e->info, log_fn, err, errlen);
+        if (!e->bridge) {
+            free(e);
+            return NULL;
+        }
+        return e;
+    }
     e->voice_dir = strdup(voice_dir);
     e->common_dir = strdup(common_dir ? common_dir : voice_dir);
     e->dc.dirs[0] = e->voice_dir;
@@ -483,6 +507,7 @@ static uint16_t clamp(int v, int lo, int hi) { return (uint16_t)(v < lo ? lo : v
 // Volume stays at the engine default: the voices are levelled for it, 100
 // drives them into clipping, and Android scales the stream volume itself.
 int atz_set_prosody(atz_engine *e, int rate, int pitch) {
+    if (e->bridge) return e->ve->bridge_prosody(e->bridge, rate, pitch);
     ve_param p[2];
     set_value(&p[0], VE_PARAM_SPEECHRATE, clamp(rate, 50, 400));
     set_value(&p[1], VE_PARAM_PITCH, clamp(pitch, 50, 200));
@@ -499,6 +524,11 @@ uint32_t atz_speak(atz_engine *e, const uint16_t *text, size_t len,
     if (!clean) return VE_E_NOMEM;
     for (size_t i = 0; i < len; i++)
         clean[i] = text[i] >= 0xD800 && text[i] <= 0xDFFF ? ' ' : text[i];
+    if (e->bridge) {
+        uint32_t r = e->ve->bridge_speak(e->bridge, clean, len, on_pcm, on_word, user);
+        free(clean);
+        return r;
+    }
     e->on_pcm = on_pcm;
     e->on_word = on_word;
     e->user = user;
@@ -513,12 +543,21 @@ uint32_t atz_speak(atz_engine *e, const uint16_t *text, size_t len,
 }
 
 void atz_stop(atz_engine *e) {
+    if (e->bridge) {
+        e->ve->bridge_stop(e->bridge);
+        return;
+    }
     e->stopping = 1;
     e->ve->stop(e->instance);
 }
 
 void atz_close(atz_engine *e) {
     if (!e) return;
+    if (e->bridge) {
+        e->ve->bridge_close(e->bridge);
+        free(e);
+        return;
+    }
     e->ve->close(e->instance);
     e->ve->uninitialize(e->speech);
     free(e->broker);

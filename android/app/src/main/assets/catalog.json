@@ -1,6 +1,23 @@
 {
  "packs": [
   {
+   "engine": "vauto",
+   "language": "ar-SA",
+   "name": "Maged",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Maged",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/90a91e7a11a26b25ff4e2a48c70ea5a8b6538c33.zip",
+   "bytes": 165968691,
+   "unpacked": 184188185,
+   "sha1": "89093a91840158a2414eb0e53e7c6bc7e1ffb878"
+  },
+  {
    "engine": "ve131",
    "language": "ar-SA",
    "name": "Tarik",
@@ -81,6 +98,23 @@
    "sha1": "5766efa14ac5981d3b0db25f53756f968afb8e1c"
   },
   {
+   "engine": "vauto",
+   "language": "cs-CZ",
+   "name": "Zuzana",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Zuzana",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/8e2816447f7799122005b0a16be3a7b9387c8933.zip",
+   "bytes": 94262705,
+   "unpacked": 104924564,
+   "sha1": "1351b86f7df79532aaa59d7a51320e3b495da543"
+  },
+  {
    "engine": "ve131",
    "language": "cs-CZ",
    "name": "Zuzana",
@@ -138,6 +172,23 @@
    "sha1": "ee030bcde1a8f954fa81b54b0b5630f7ad021f7b"
   },
   {
+   "engine": "vauto",
+   "language": "da-DK",
+   "name": "Ida",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Ida",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/04137c4c28dc4a2fbf4151b334a080dcf7838647.zip",
+   "bytes": 66504770,
+   "unpacked": 76246715,
+   "sha1": "60ab86842a70a577a93725856d4873ddf8064bf7"
+  },
+  {
    "engine": "ve131",
    "language": "da-DK",
    "name": "Sara",
@@ -193,6 +244,23 @@
    "bytes": 38439105,
    "unpacked": 44150784,
    "sha1": "ddf15a6bca5eb1c547afb06889a1e03b5fffab4b"
+  },
+  {
+   "engine": "vauto",
+   "language": "de-DE",
+   "name": "Anna",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Anna",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/786f6e0703b7bfb500e5f16ebfc4dd9cc8f0b556.zip",
+   "bytes": 153211262,
+   "unpacked": 174181123,
+   "sha1": "1b83e53b2e97bd1f0f67892096a5d7611d38fb28"
   },
   {
    "engine": "ve131",
@@ -275,6 +343,23 @@
    "sha1": "9dd2ca0770ff73aa7fecb992623e229721b3f045"
   },
   {
+   "engine": "vauto",
+   "language": "el-GR",
+   "name": "Alexandros",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Alexandros",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6.1/041-8708.20130128.OsVm4/com_apple_MobileAsset_VoiceServicesVocalizerVoice/ffe9bd0c233199a5e53cb00c6c00654ca028c998.zip",
+   "bytes": 51219190,
+   "unpacked": 57918552,
+   "sha1": "5ac81d862ca0be103a6e78e67b941b1dc887000f"
+  },
+  {
    "engine": "ve131",
    "language": "el-GR",
    "name": "Melina",
@@ -332,6 +417,23 @@
    "sha1": "70de33e6d994453bd5f81252f589e87267f4771e"
   },
   {
+   "engine": "vauto",
+   "language": "en-AU",
+   "name": "Karen",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Karen",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/193fdb9be81f7bba12ec38c2ace51c67f87a9388.zip",
+   "bytes": 113234127,
+   "unpacked": 126463357,
+   "sha1": "96405afec01867c3fa777560b3b63aea0ec9b3da"
+  },
+  {
    "engine": "ve131",
    "language": "en-AU",
    "name": "Karen",
@@ -387,6 +489,23 @@
    "bytes": 373721429,
    "unpacked": 423944192,
    "sha1": "31d055dc363d450d3f6d6c19962d426ad409088e"
+  },
+  {
+   "engine": "vauto",
+   "language": "en-GB",
+   "name": "Daniel",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Daniel",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/5dc10657d6adfb3ac86bba70cd0be274dd984862.zip",
+   "bytes": 103952163,
+   "unpacked": 115391744,
+   "sha1": "fe5a621029913fdcba00f8884712fd4b9585231b"
   },
   {
    "engine": "ve131",
@@ -492,6 +611,23 @@
    "sha1": "c88c0c082129f7d432653cf0fdcf55a57b2c4665"
   },
   {
+   "engine": "vauto",
+   "language": "en-IE",
+   "name": "Moira",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Moira",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/6d59524c1b994ea8e86cb7c79177278915dfeddb.zip",
+   "bytes": 104777121,
+   "unpacked": 119396699,
+   "sha1": "47dc30ab212846d50bc26b23e56fcf28c1b8b2b5"
+  },
+  {
    "engine": "ve131",
    "language": "en-IE",
    "name": "Moira",
@@ -524,6 +660,23 @@
    "bytes": 119723962,
    "unpacked": 134971392,
    "sha1": "7e966249b78ee0f533f6081645682ef087a1e352"
+  },
+  {
+   "engine": "vauto",
+   "language": "en-US",
+   "name": "Samantha",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Samantha",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/8174961b8c786e5a13efb7adec17fedf72bf6fc9.zip",
+   "bytes": 123140579,
+   "unpacked": 140580999,
+   "sha1": "e9453e3958b67a0b0d805c23afa50e9fb32fcdcd"
   },
   {
    "engine": "ve131",
@@ -652,6 +805,23 @@
    "sha1": "009c965256f3dc9068b640eea410457ad01283c8"
   },
   {
+   "engine": "vauto",
+   "language": "en-ZA",
+   "name": "Tessa",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Tessa",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/7f6dc9fd4003ecff06bf8acdff1c64386a124024.zip",
+   "bytes": 105241228,
+   "unpacked": 119062196,
+   "sha1": "73d438df694f96e8c121510c97db809b39972328"
+  },
+  {
    "engine": "ve131",
    "language": "en-ZA",
    "name": "Tessa",
@@ -684,6 +854,23 @@
    "bytes": 116303945,
    "unpacked": 129392640,
    "sha1": "4f69b71fe340146b627a839f50700b52051e7b76"
+  },
+  {
+   "engine": "vauto",
+   "language": "es-ES",
+   "name": "Monica",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Monica",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-6724.20120801.Bnuh3/com_apple_MobileAsset_VoiceServicesVocalizerVoice/4184facaee1b8c064c8c2fd7f6afc983e67e15ad.zip",
+   "bytes": 102870583,
+   "unpacked": 116603955,
+   "sha1": "07d41d3d593bc9f1528ea1fe22ec6c1125474de9"
   },
   {
    "engine": "ve131",
@@ -766,6 +953,23 @@
    "sha1": "484ee89add0a5bee09e07c4ae4d238e89e1b06a6"
   },
   {
+   "engine": "vauto",
+   "language": "es-MX",
+   "name": "Paulina",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Paulina",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-6724.20120801.Bnuh3/com_apple_MobileAsset_VoiceServicesVocalizerVoice/8d4f29eef1ebf75ece3e3335a02b12705050f5fe.zip",
+   "bytes": 99439931,
+   "unpacked": 112636248,
+   "sha1": "37ccde610c8396765e266a2c0dd89e6af5aa0482"
+  },
+  {
    "engine": "ve131",
    "language": "es-MX",
    "name": "Paulina",
@@ -846,6 +1050,23 @@
    "sha1": "c116e3716df33bcca1c3060876535fe1b7955b4c"
   },
   {
+   "engine": "vauto",
+   "language": "fi-FI",
+   "name": "Mikko",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Mikko",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/155945aef5a77c03f9a1fef04e90f62c6d170d87.zip",
+   "bytes": 219266488,
+   "unpacked": 245455672,
+   "sha1": "4a4e03120e93a051f90674c2e064ae223b9f039e"
+  },
+  {
    "engine": "ve131",
    "language": "fi-FI",
    "name": "Satu",
@@ -901,6 +1122,23 @@
    "bytes": 41992388,
    "unpacked": 47927296,
    "sha1": "4449fc55a49ff8b4bfff2f61e02f75811ad3b2b1"
+  },
+  {
+   "engine": "vauto",
+   "language": "fr-CA",
+   "name": "Julie",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Julie",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/e521a8ee840379f37ef3e5f05c11fd0b054e3dc5.zip",
+   "bytes": 52321447,
+   "unpacked": 60599496,
+   "sha1": "8693ac46cd5e570afb0b598fb9d27ee215c01274"
   },
   {
    "engine": "ve131",
@@ -981,6 +1219,23 @@
    "bytes": 108722935,
    "unpacked": 125087744,
    "sha1": "79f2127aeae4f8c1299863bf9743c36222e1706b"
+  },
+  {
+   "engine": "vauto",
+   "language": "fr-FR",
+   "name": "Thomas",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Thomas",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/10343a1272a782fc35a6335b64adf4f195921ea8.zip",
+   "bytes": 108623696,
+   "unpacked": 124044211,
+   "sha1": "480d8df63ff2974065efb4932e569ff95e689c1f"
   },
   {
    "engine": "ve131",
@@ -1080,6 +1335,23 @@
    "sha1": "4a37e981c14781d1a91792172f88723873162138"
   },
   {
+   "engine": "vauto",
+   "language": "hi-IN",
+   "name": "Lekha",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Lekha",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/2b8d4682e1483c5ad6c3cf4b37d375ac0369b654.zip",
+   "bytes": 74433367,
+   "unpacked": 84523751,
+   "sha1": "46349503be665096aaa2dd56a9d2613defb64915"
+  },
+  {
    "engine": "ve131",
    "language": "hi-IN",
    "name": "Lekha",
@@ -1137,6 +1409,23 @@
    "sha1": "52d9a7344e54c2ec088ce7277c2eda2c2346cef1"
   },
   {
+   "engine": "vauto",
+   "language": "hu-HU",
+   "name": "Eszter",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Eszter",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/f5de278732433a9796ca87554ccfc378386f5ab0.zip",
+   "bytes": 109592861,
+   "unpacked": 129025516,
+   "sha1": "6a02a37212830878afa24fdb0e4d42dcd96d6da1"
+  },
+  {
    "engine": "ve131",
    "language": "hu-HU",
    "name": "Mariska",
@@ -1171,6 +1460,23 @@
    "sha1": "3fd343571dfba66ffb3280495ed8a97cf8f6b543"
   },
   {
+   "engine": "vauto",
+   "language": "id-ID",
+   "name": "Damayanti",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Damayanti",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/81cee215f123028cf8a015ead071856f65c4dc7f.zip",
+   "bytes": 83859759,
+   "unpacked": 93578147,
+   "sha1": "cbe150d0bf6f2da8c92f2ce4492291ba9a97a0be"
+  },
+  {
    "engine": "ve131",
    "language": "id-ID",
    "name": "Damayanti",
@@ -1203,6 +1509,23 @@
    "bytes": 116844305,
    "unpacked": 130547712,
    "sha1": "766076168954f5afb518121b85261d51026e8801"
+  },
+  {
+   "engine": "vauto",
+   "language": "it-IT",
+   "name": "Silvia",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Silvia",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/ad5c22a54cc24bbd6492ab92af74cbd09f12889c.zip",
+   "bytes": 89013280,
+   "unpacked": 101523469,
+   "sha1": "b192a51f69f73e128822c6ee4aaa375c5929ed43"
   },
   {
    "engine": "ve131",
@@ -1285,6 +1608,23 @@
    "sha1": "0031514917d4f142b2b14b19f904cd60f3438d4a"
   },
   {
+   "engine": "vauto",
+   "language": "ja-JP",
+   "name": "Kyoko",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Kyoko",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/1ba77cf203de583d36ea116c73ef522140d4ba5f.zip",
+   "bytes": 104448357,
+   "unpacked": 115544554,
+   "sha1": "cdfada840b07ec1e39e2a3168234b802399ce9be"
+  },
+  {
    "engine": "ve131",
    "language": "ja-JP",
    "name": "Kyoko",
@@ -1340,6 +1680,23 @@
    "bytes": 287687472,
    "unpacked": 331309056,
    "sha1": "510ca784ad82cd7c744881a6b54b7463c730d964"
+  },
+  {
+   "engine": "vauto",
+   "language": "ko-KR",
+   "name": "Yuna",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Yuna",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/90d1ff7245a3ed1d887f0a2782a8a6fe4e9e476d.zip",
+   "bytes": 50385533,
+   "unpacked": 57972894,
+   "sha1": "89ef051e134d66ffb00bfe1420ab66e9713bd3f5"
   },
   {
    "engine": "ve131",
@@ -1399,6 +1756,23 @@
    "sha1": "00743811609303656849cf1039012cd82ff6f8c0"
   },
   {
+   "engine": "vauto",
+   "language": "nl-BE",
+   "name": "Ellen",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Ellen",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6.1/041-8708.20130128.OsVm4/com_apple_MobileAsset_VoiceServicesVocalizerVoice/3cda610a56416684d7632fde69483108b7f6bf2a.zip",
+   "bytes": 40214685,
+   "unpacked": 46483900,
+   "sha1": "608bd101d6a3e5e28e97223563f69958213dd639"
+  },
+  {
    "engine": "ve131",
    "language": "nl-BE",
    "name": "Ellen",
@@ -1431,6 +1805,23 @@
    "bytes": 48016271,
    "unpacked": 54255616,
    "sha1": "d8f02896921230093e55f45b88c6351b09e45d41"
+  },
+  {
+   "engine": "vauto",
+   "language": "nl-NL",
+   "name": "Xander",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Xander",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6.1/041-8708.20130128.OsVm4/com_apple_MobileAsset_VoiceServicesVocalizerVoice/6a091e2d45905979730897e72dea364855b18606.zip",
+   "bytes": 126778163,
+   "unpacked": 147521770,
+   "sha1": "1eeb8094447238f82b4451b21cf3ffa67297c610"
   },
   {
    "engine": "ve131",
@@ -1490,6 +1881,23 @@
    "sha1": "cab95c986929cd0ea279043a02b7155cdeb65884"
   },
   {
+   "engine": "vauto",
+   "language": "no-NO",
+   "name": "Stine",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Stine",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/11476da3cd9fd6ae808c7a71452283da122cb642.zip",
+   "bytes": 80504420,
+   "unpacked": 94535983,
+   "sha1": "ed124879e481d2d637b2ef1d7c4552ef7e46b227"
+  },
+  {
    "engine": "ve131",
    "language": "no-NO",
    "name": "Nora",
@@ -1545,6 +1953,23 @@
    "bytes": 40342067,
    "unpacked": 45559808,
    "sha1": "9bac70a3ba04a5b12c3fa81aa6fb4999dc6517c6"
+  },
+  {
+   "engine": "vauto",
+   "language": "pl-PL",
+   "name": "Agata",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Agata",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/9f064108d07385554c32bb2fdcaed7651b6f106c.zip",
+   "bytes": 45854835,
+   "unpacked": 52572664,
+   "sha1": "5795390f51926f665ea7d59d3d3ec6dde06140be"
   },
   {
    "engine": "ve131",
@@ -1627,6 +2052,23 @@
    "sha1": "726410dd6ed74c382e8a862e4dc8f49b77d5a386"
   },
   {
+   "engine": "vauto",
+   "language": "pt-BR",
+   "name": "Raquel",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Raquel",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/5bd482661a879c0aaf88c8806ea46bc6752ba300.zip",
+   "bytes": 39817610,
+   "unpacked": 47507039,
+   "sha1": "ddf6d8c5922d561861ff6ba049f427f56aa7e7ce"
+  },
+  {
    "engine": "ve131",
    "language": "pt-BR",
    "name": "Luciana",
@@ -1682,6 +2124,23 @@
    "bytes": 35023859,
    "unpacked": 39710720,
    "sha1": "cffd4c8300c30ead5f15cd9c74dae1ca9e5775b0"
+  },
+  {
+   "engine": "vauto",
+   "language": "pt-PT",
+   "name": "Joana",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Joana",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/8e5d9402460f69537080a34293dec96e776308c3.zip",
+   "bytes": 115129530,
+   "unpacked": 132158877,
+   "sha1": "6dcd6755351b2ab723f7b4192331c95d2126a4d4"
   },
   {
    "engine": "ve131",
@@ -1764,6 +2223,23 @@
    "sha1": "601f51d1697ad27862301e019c86514f043d6811"
   },
   {
+   "engine": "vauto",
+   "language": "ro-RO",
+   "name": "Simona",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Simona",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/26065a75ee3c25b2415348720bbb88e23d82caa6.zip",
+   "bytes": 131123190,
+   "unpacked": 147183180,
+   "sha1": "5079736b6ee20a9bb0e917d3e0e32b1c552a0603"
+  },
+  {
    "engine": "ve131",
    "language": "ro-RO",
    "name": "Ioana",
@@ -1796,6 +2272,23 @@
    "bytes": 33545345,
    "unpacked": 38256640,
    "sha1": "37d4a0d498c8441a41d67f4aefecab4313de14b3"
+  },
+  {
+   "engine": "vauto",
+   "language": "ru-RU",
+   "name": "Milena",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Milena",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/baff21ae6c352c1c812b339cc6799d84d8154114.zip",
+   "bytes": 124749199,
+   "unpacked": 142838127,
+   "sha1": "230bbae7f9c955269f18c2493b725380514b7cf3"
   },
   {
    "engine": "ve131",
@@ -1878,6 +2371,23 @@
    "sha1": "8d4fe1351ae1a3b925707951b7c298d5a809dad5"
   },
   {
+   "engine": "vauto",
+   "language": "sk-SK",
+   "name": "Laura",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Laura",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/08ba30c4b008f0b3daa78b97d76c0cbd659e868a.zip",
+   "bytes": 73847057,
+   "unpacked": 84620047,
+   "sha1": "14b8dddae4cf283504dd2b66a85cd0001e16bb65"
+  },
+  {
    "engine": "ve131",
    "language": "sk-SK",
    "name": "Laura",
@@ -1910,6 +2420,23 @@
    "bytes": 86069045,
    "unpacked": 95744000,
    "sha1": "f241e94ea2a50a9a773aff3507f477f0c93b6ae0"
+  },
+  {
+   "engine": "vauto",
+   "language": "sv-SE",
+   "name": "Alva",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Alva",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/1fdf3803d88455f1c7bda7bbf7f54290b9075450.zip",
+   "bytes": 126212875,
+   "unpacked": 144036717,
+   "sha1": "d6a975c97ef25e4b9d1a88f333221e19fa6712b4"
   },
   {
    "engine": "ve131",
@@ -1992,6 +2519,23 @@
    "sha1": "962d325901641c6cc86c38c55a4b64fd7a95d6fc"
   },
   {
+   "engine": "vauto",
+   "language": "th-TH",
+   "name": "Narisa",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Narisa",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/46dd5c73b5960bc2a982a3ccfd549b67bec7611a.zip",
+   "bytes": 89229959,
+   "unpacked": 100886587,
+   "sha1": "67d9fd9a8397300415417c4fc420fb4fe147490b"
+  },
+  {
    "engine": "ve131",
    "language": "th-TH",
    "name": "Kanya",
@@ -2047,6 +2591,23 @@
    "bytes": 318268680,
    "unpacked": 382169088,
    "sha1": "1334be2c976031ce5643fc4d7db2919dcbe3087c"
+  },
+  {
+   "engine": "vauto",
+   "language": "tr-TR",
+   "name": "Aylin",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Aylin",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/b3ebfa48cdda2da66a3b2b9c35dd8cf4255cd14d.zip",
+   "bytes": 58021325,
+   "unpacked": 65103234,
+   "sha1": "accf127fe788fbd04ab7757321f3a4f4d4554c4a"
   },
   {
    "engine": "ve131",
@@ -2106,6 +2667,23 @@
    "sha1": "18c257f0aa09a1ec56036a9a3fbfe7c596ea5055"
   },
   {
+   "engine": "vauto",
+   "language": "zh-CN",
+   "name": "Ting-Ting",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Ting-Ting",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/3903a69842b2e707449e3811489d32b9fb3a336e.zip",
+   "bytes": 160232765,
+   "unpacked": 185917969,
+   "sha1": "cb21dc7d1ae0ad24c3e174a636dabb8bfc47eda4"
+  },
+  {
    "engine": "ve131",
    "language": "zh-CN",
    "name": "Ting-Ting",
@@ -2140,6 +2718,23 @@
    "sha1": "cd17c2098c01a01e4054a9ecdb8f0942147e8851"
   },
   {
+   "engine": "vauto",
+   "language": "zh-HK",
+   "name": "Sin-Ji",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Sin-Ji",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/82e2f17644312fa6f4d4b78d2feb2d6cdd5d1ee2.zip",
+   "bytes": 83221064,
+   "unpacked": 92808525,
+   "sha1": "2fd56e7185c99d1ba73ba0d40b5255365bd4d0c9"
+  },
+  {
    "engine": "ve131",
    "language": "zh-HK",
    "name": "Sin-Ji",
@@ -2172,6 +2767,23 @@
    "bytes": 97381698,
    "unpacked": 107917312,
    "sha1": "1c6f30c5a7e66af15e3bae9dff110be8b801fbd9"
+  },
+  {
+   "engine": "vauto",
+   "language": "zh-TW",
+   "name": "Ya-Ling",
+   "voices": [
+    {
+     "folder": "",
+     "name": "Ya-Ling",
+     "model": "full_155mrf22",
+     "footprint": "premium"
+    }
+   ],
+   "url": "http://appldnld.apple.com/iOS6/041-1996.20120625.fk44R/com_apple_MobileAsset_VoiceServicesVocalizerVoice/89f18534f6c5119ad410b03ec9d1d7b677217674.zip",
+   "bytes": 109615374,
+   "unpacked": 122776206,
+   "sha1": "cb0ee02f0f5d268332e884a0f4b043eac9a8946d"
   },
   {
    "engine": "ve131",
