@@ -39,6 +39,15 @@ convert() {
 # VE 1.3.1's own code calls only libc; Apple's daemon code around it never runs.
 convert libve131.so "$fw/ios7/voiced" --skip-initializers --no-cxx-runtime
 # VE 1.5.1 runs Apple's C++ Gryphon components, whose globals its initializers build.
+# On Android its std::string calls go to applestring.cpp, built with Apple's
+# string layout, instead of libc++_shared.
+case $target in
+android-arm64)
+    "$ndk_bin/aarch64-linux-android26-clang++" -std=c++17 -O2 -fPIC -fvisibility=hidden -Wall -Wextra \
+        -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS -D_LIBCPP_ABI_ALTERNATE_STRING_LAYOUT \
+        -c "$root/native/applestring.cpp" -o "$out/applestring.o"
+    cxx+=(--extra-object "$out/applestring.o") ;;
+esac
 convert libve151.so "$fw/ios10/TTSSpeechBundle.arm64" "${cxx[@]}"
 
 if [ "$target" = linux-arm64 ]; then
