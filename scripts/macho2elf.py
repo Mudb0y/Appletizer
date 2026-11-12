@@ -370,12 +370,16 @@ def _rename_import(macho_name: str, target: str = None) -> str:
             return BIONIC_RENAMES[stripped]
         # The NDK's libc++ renames its inline namespace from std::__1 to
         # std::__ndk1 (so an app's bundled libc++ can't clash with the
-        # platform's). Apple built the engine against std::__1. The ABI is
-        # otherwise identical and substitution refs are positional, so a textual
-        # St3__1 -> St6__ndk1 rewrite of the mangled name binds these imports
-        # straight to libc++_shared.so — functions, vtables, VTTs, type-infos,
-        # and locale facet ids alike. (Specific to NDKs that use __ndk1, which
-        # r27 does; if a future NDK reverts to __1 this rewrite becomes wrong.)
+        # platform's). Apple built the engine against std::__1. Substitution
+        # refs are positional, so a textual St3__1 -> St6__ndk1 rewrite of the
+        # mangled name binds these imports straight to libc++_shared.so —
+        # functions, vtables, VTTs, type-infos, and locale facet ids alike.
+        # (Specific to NDKs that use __ndk1, which r27 does; if a future NDK
+        # reverts to __1 this rewrite becomes wrong.) The ABI is not identical
+        # for std::string: iOS arm64 uses libc++'s alternate string layout and
+        # the NDK the standard one, so an engine that imports std::string
+        # functions needs them from an --extra-object built with Apple's
+        # layout (native/applestring.cpp).
         if "St3__1" in stripped:
             return stripped.replace("St3__1", "St6__ndk1")
     return DARWIN_TO_LINUX.get(stripped, stripped)
