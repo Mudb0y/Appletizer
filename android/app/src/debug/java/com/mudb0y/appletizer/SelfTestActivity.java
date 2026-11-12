@@ -17,7 +17,9 @@ import java.io.File;
  *       --es voice en-US-samantha-compact --es text "Hello" --es out hello.wav
  * The file lands in the app's external files directory; results go to logcat
  * under AppletizerTest. With --es download PACK_KEY instead, it downloads and
- * installs that voice pack and reports when it is in place.
+ * installs that voice pack and reports when it is in place. With --es
+ * update-base URL, the updater reads URL/stable/update.json and
+ * URL/dev/update.json instead of GitHub; an empty URL undoes it.
  */
 public class SelfTestActivity extends Activity {
     private static final String TAG = "AppletizerTest";
@@ -28,6 +30,14 @@ public class SelfTestActivity extends Activity {
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
+        String base = getIntent().getStringExtra("update-base");
+        if (base != null) {
+            Updater.prefs(this).edit().putString("testBase", base.isEmpty() ? null : base)
+                    .remove("outcome").remove("json").apply();
+            Log.i(TAG, "DONE update-base " + base);
+            finish();
+            return;
+        }
         String download = getIntent().getStringExtra("download");
         if (download != null) {
             download(download);

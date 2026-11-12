@@ -139,7 +139,7 @@ public class DownloadService extends Service {
             s.phase = Phase.INSTALLING;
             changed();
             nm.notify(ONGOING_ID, progress(label(p), getString(R.string.notif_installing, label(p)), -1));
-            String sum = sha1(zip);
+            String sum = digest(zip, "SHA-1");
             if (!sum.equalsIgnoreCase(p.sha1))
                 throw new IOException("checksum mismatch, the download was damaged");
             install(p, zip);
@@ -243,10 +243,10 @@ public class DownloadService extends Service {
         if (!tmp.renameTo(dest)) throw new IOException("cannot move " + tmp);
     }
 
-    private static String sha1(File f) throws IOException {
+    static String digest(File f, String algorithm) throws IOException {
         MessageDigest md;
         try {
-            md = MessageDigest.getInstance("SHA-1");
+            md = MessageDigest.getInstance(algorithm);
         } catch (NoSuchAlgorithmException e) {
             throw new IOException(e);
         }

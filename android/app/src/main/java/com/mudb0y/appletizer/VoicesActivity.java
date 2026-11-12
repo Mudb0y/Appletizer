@@ -17,7 +17,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
-/** One row per language; a language opens its voices, a voice opens what can be done with it. */
+/**
+ * The updates row, then one row per language; a language opens its voices,
+ * a voice opens what can be done with it.
+ */
 public class VoicesActivity extends Activity {
     private VoiceStore store;
     private ArrayAdapter<String> adapter;
@@ -32,26 +35,32 @@ public class VoicesActivity extends Activity {
         ListView list = new ListView(this);
         adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, rows);
         list.setAdapter(adapter);
-        list.setOnItemClickListener((parent, view, position, id) ->
-                language(store.languages().get(position)));
+        list.setOnItemClickListener((parent, view, position, id) -> {
+            if (position == 0) startActivity(new Intent(this, UpdatesActivity.class));
+            else language(store.languages().get(position - 1));
+        });
         setContentView(list);
         fill();
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
         tts = new TextToSpeech(this, status -> { }, getPackageName());
+        Updater.schedule(this);
+        if (saved == null) Updater.check(this, false, null);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         DownloadService.addListener(refresh);
+        Updater.addListener(refresh);
         fill();
     }
 
     @Override
     protected void onPause() {
         DownloadService.removeListener(refresh);
+        Updater.removeListener(refresh);
         super.onPause();
     }
 
@@ -67,6 +76,7 @@ public class VoicesActivity extends Activity {
 
     private void fill() {
         rows.clear();
+        rows.add(Updater.summary(this));
         for (String lang : store.languages()) {
             List<VoiceStore.Voice> voices = store.voices(lang);
             int ready = 0;

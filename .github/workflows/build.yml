@@ -94,6 +94,27 @@ jobs:
           nix develop --command bash -c 'cd android && gradle --no-daemon --console=plain assembleRelease'
           mv android/app/build/outputs/apk/release/app-release.apk "$APK"
 
+      # What the app's updater reads: a fixed address per channel, the APK's
+      # checksum, and the changes since the build this channel last published.
+      - name: Update file
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+              tag=$GITHUB_REF_NAME
+              since=$(git describe --tags --match 'v*' --abbrev=0 "$tag^" 2> /dev/null || true)
+          else
+              tag=dev
+              since=$(git rev-parse -q --verify refs/tags/dev || true)
+          fi
+          git log --no-merges --format=%s ${since:+$since..}HEAD | head -40 > notes.txt
+          [ -s notes.txt ] || git log -1 --format=%s > notes.txt
+          jq -n --argjson code "$APPLETIZER_VERSION_CODE" --arg name "$APPLETIZER_VERSION_NAME" \
+              --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$APK" \
+              --argjson size "$(stat -c %s "$APK")" --arg sha256 "$(sha256sum "$APK" | cut -d' ' -f1)" \
+              --rawfile notes notes.txt \
+              '{code: $code, name: $name, url: $url, size: $size, sha256: $sha256,
+                notes: ($notes | split("\n") | map(select(length > 0)))}' > update.json
+          cat update.json
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.APK }}
@@ -103,7 +124,7 @@ jobs:
         if: steps.key.outputs.signed == 'true' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "$APK" --verify-tag --title "Appletizer $APPLETIZER_VERSION_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" "$APK" update.json --verify-tag --title "Appletizer $APPLETIZER_VERSION_NAME" --generate-notes
 
       - name: Development build
         if: steps.key.outputs.signed == 'true' && github.ref == 'refs/heads/main'
@@ -111,6 +132,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete dev --yes --cleanup-tag 2> /dev/null || true
-          gh release create dev "$APK" --prerelease --target "$GITHUB_SHA" \
+          gh release create dev "$APK" update.json --prerelease --target "$GITHUB_SHA" \
               --title "Development build $APPLETIZER_VERSION_NAME" \
               --notes "Built from main at $(git rev-parse --short HEAD): $(git log -1 --format=%s). It installs over any earlier development build or tagged release."

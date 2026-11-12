@@ -30,6 +30,8 @@ public class AppletizerTtsService extends TextToSpeechService {
     @Override
     public void onCreate() {
         store = VoiceStore.get(this);
+        // The engine runs whenever TalkBack does, even if the app is never opened.
+        Updater.schedule(this);
         super.onCreate();
     }
 
