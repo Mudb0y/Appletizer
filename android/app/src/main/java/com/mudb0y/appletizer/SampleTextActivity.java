@@ -13,11 +13,12 @@ public class SampleTextActivity extends Activity {
         VoiceStore store = VoiceStore.get(this);
         Intent in = getIntent();
         Object[] m = store.match(in.getStringExtra("language"), in.getStringExtra("country"));
-        if (m == null) {
+        VoiceStore.Voice v = m == null ? null : store.best((String) m[0]);
+        if (v == null) {
             setResult(TextToSpeech.LANG_NOT_SUPPORTED);
         } else {
-            setResult(TextToSpeech.LANG_AVAILABLE, new Intent().putExtra(
-                    TextToSpeech.Engine.EXTRA_SAMPLE_TEXT, store.best((String) m[0]).sampleText()));
+            setResult(TextToSpeech.LANG_AVAILABLE,
+                    new Intent().putExtra(TextToSpeech.Engine.EXTRA_SAMPLE_TEXT, v.sampleText()));
         }
         finish();
     }

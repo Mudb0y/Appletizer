@@ -33,9 +33,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-/** Fetches premium voice packs from Apple, checks them, and unpacks them. */
+/** Fetches voice packs from Apple, checks them, and unpacks them. */
 public class DownloadService extends Service {
-    static final String EXTRA_LANGUAGE = "language";
+    static final String EXTRA_PACK = "pack";
     static final String ACTION_CANCEL = "com.mudb0y.appletizer.CANCEL";
     private static final String CHANNEL = "downloads";
     private static final int ONGOING_ID = 1;
@@ -53,8 +53,8 @@ public class DownloadService extends Service {
     private static final List<Runnable> listeners = new CopyOnWriteArrayList<>();
     private static final Set<String> cancelled = ConcurrentHashMap.newKeySet();
 
-    static State state(String language) {
-        return states.get(language);
+    static State state(VoiceStore.Pack p) {
+        return states.get(p.key());
     }
 
     static void addListener(Runnable r) {
@@ -91,28 +91,29 @@ public class DownloadService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        String lang = intent == null ? null : intent.getStringExtra(EXTRA_LANGUAGE);
-        if (lang == null || store.pack(lang) == null) {
+        String key = intent == null ? null : intent.getStringExtra(EXTRA_PACK);
+        VoiceStore.Pack p = key == null ? null : store.pack(key);
+        if (p == null) {
             stopIfIdle();
             return START_NOT_STICKY;
         }
         if (ACTION_CANCEL.equals(intent.getAction())) {
-            cancelled.add(lang);
+            cancelled.add(key);
             stopIfIdle();
             return START_NOT_STICKY;
         }
-        State s = states.get(lang);
+        State s = states.get(key);
         if (s != null && s.phase != Phase.FAILED) return START_NOT_STICKY;
-        cancelled.remove(lang);
-        states.put(lang, new State());
+        cancelled.remove(key);
+        states.put(key, new State());
         changed();
         pending.incrementAndGet();
-        Notification n = progress(label(lang), getString(R.string.notif_downloading, label(lang)), 0);
+        Notification n = progress(label(p), getString(R.string.notif_downloading, label(p)), 0);
         if (Build.VERSION.SDK_INT >= 29)
             startForeground(ONGOING_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
         else
             startForeground(ONGOING_ID, n);
-        worker.submit(() -> run(lang));
+        worker.submit(() -> run(p));
         return START_NOT_STICKY;
     }
 
@@ -122,40 +123,40 @@ public class DownloadService extends Service {
         super.onDestroy();
     }
 
-    private String label(String lang) {
-        return getString(R.string.premium_voice_of,
-                Locale.forLanguageTag(lang).getDisplayName() + ", " + store.premiumName(lang));
+    private String label(VoiceStore.Pack p) {
+        return getString(R.string.pack_label, Locale.forLanguageTag(p.language).getDisplayName(),
+                p.name, getString(p.gen.era));
     }
 
-    private void run(String lang) {
-        State s = states.get(lang);
-        VoiceStore.Pack p = store.pack(lang);
-        File zip = new File(getCacheDir(), lang + ".zip");
+    private void run(VoiceStore.Pack p) {
+        String key = p.key();
+        State s = states.get(key);
+        File zip = new File(getCacheDir(), key + ".zip");
         try {
             s.phase = Phase.DOWNLOADING;
             changed();
-            download(lang, p, zip, s);
+            download(key, p, zip, s);
             s.phase = Phase.INSTALLING;
             changed();
-            nm.notify(ONGOING_ID, progress(label(lang), getString(R.string.notif_installing, label(lang)), -1));
+            nm.notify(ONGOING_ID, progress(label(p), getString(R.string.notif_installing, label(p)), -1));
             String sum = sha1(zip);
             if (!sum.equalsIgnoreCase(p.sha1))
                 throw new IOException("checksum mismatch, the download was damaged");
-            install(lang, zip);
+            install(p, zip);
             //noinspection ResultOfMethodCallIgnored
             zip.delete();
-            states.remove(lang);
-            finished(getString(R.string.notif_installed, label(lang)));
+            states.remove(key);
+            finished(getString(R.string.notif_installed, label(p)));
         } catch (Exception e) {
-            if (cancelled.remove(lang)) {
+            if (cancelled.remove(key)) {
                 //noinspection ResultOfMethodCallIgnored
                 zip.delete();
-                states.remove(lang);
+                states.remove(key);
             } else {
-                Log.w(TAG, "downloading " + lang, e);
+                Log.w(TAG, "downloading " + key, e);
                 s.phase = Phase.FAILED;
                 s.error = e.getMessage();
-                finished(getString(R.string.notif_failed, label(lang), e.getMessage()));
+                finished(getString(R.string.notif_failed, label(p), e.getMessage()));
             }
         } finally {
             changed();
@@ -166,7 +167,7 @@ public class DownloadService extends Service {
         }
     }
 
-    private void download(String lang, VoiceStore.Pack p, File zip, State s) throws IOException {
+    private void download(String key, VoiceStore.Pack p, File zip, State s) throws IOException {
         long have = zip.isFile() ? zip.length() : 0;
         if (have > p.bytes) {
             //noinspection ResultOfMethodCallIgnored
@@ -186,7 +187,7 @@ public class DownloadService extends Service {
         try (InputStream in = c.getInputStream(); OutputStream out = new FileOutputStream(zip, append)) {
             byte[] buf = new byte[1 << 16];
             for (int n; (n = in.read(buf)) > 0; ) {
-                if (cancelled.contains(lang)) throw new IOException("cancelled");
+                if (cancelled.contains(key)) throw new IOException("cancelled");
                 out.write(buf, 0, n);
                 have += n;
                 int pct = (int) (have * 100 / p.bytes);
@@ -196,7 +197,7 @@ public class DownloadService extends Service {
                 }
                 if (pct / 5 != lastShown) {
                     lastShown = pct / 5;
-                    nm.notify(ONGOING_ID, progress(label(lang), getString(R.string.notif_downloading, label(lang)), pct));
+                    nm.notify(ONGOING_ID, progress(label(p), getString(R.string.notif_downloading, label(p)), pct));
                 }
             }
         } finally {
@@ -205,25 +206,38 @@ public class DownloadService extends Service {
         if (have != p.bytes) throw new IOException("download ended early");
     }
 
-    /** iOS keeps the pack's files flat in one folder, broker header renamed. */
-    private void install(String lang, File zip) throws IOException {
-        File dest = store.premiumDir(lang);
+    /**
+     * Like iOS: everything below AssetData/<pack>/ keeps its place, so a pack
+     * holding a compact and a premium voice keeps them in their own folders,
+     * and broker.hdr.asset loses its suffix.
+     */
+    private void install(VoiceStore.Pack p, File zip) throws IOException {
+        File dest = store.packDir(p);
         File tmp = new File(dest.getPath() + ".tmp");
         VoiceStore.deleteTree(tmp);
         if (!tmp.mkdirs()) throw new IOException("cannot create " + tmp);
         try (ZipInputStream z = new ZipInputStream(new FileInputStream(zip))) {
             byte[] buf = new byte[1 << 16];
             for (ZipEntry e; (e = z.getNextEntry()) != null; ) {
-                if (e.isDirectory()) continue;
-                String name = e.getName().substring(e.getName().lastIndexOf('/') + 1);
-                if (name.isEmpty() || name.endsWith(".plist")) continue;
+                String[] parts = e.getName().split("/");
+                if (e.isDirectory() || parts.length < 3 || !parts[0].equals("AssetData")) continue;
+                String name = parts[parts.length - 1];
+                if (name.endsWith(".plist") || name.contains("..")) continue;
                 if (name.equals("broker.hdr.asset")) name = "broker.hdr";
-                try (OutputStream out = new FileOutputStream(new File(tmp, name))) {
+                File dir = tmp;
+                for (int i = 2; i < parts.length - 1; i++) {
+                    if (parts[i].equals("..")) throw new IOException("the pack has a bad path");
+                    dir = new File(dir, parts[i]);
+                }
+                if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("cannot create " + dir);
+                try (OutputStream out = new FileOutputStream(new File(dir, name))) {
                     for (int n; (n = z.read(buf)) > 0; ) out.write(buf, 0, n);
                 }
             }
         }
-        if (!new File(tmp, "broker.hdr").isFile()) throw new IOException("the pack has no broker header");
+        for (String f : p.folders)
+            if (!new File(new File(tmp, f), "broker.hdr").isFile())
+                throw new IOException("the pack has no broker header");
         VoiceStore.deleteTree(dest);
         if (!tmp.renameTo(dest)) throw new IOException("cannot move " + tmp);
     }

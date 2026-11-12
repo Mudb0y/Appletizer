@@ -16,7 +16,8 @@ import java.io.File;
  *   adb shell am start -n com.mudb0y.appletizer/.SelfTestActivity \
  *       --es voice en-US-samantha-compact --es text "Hello" --es out hello.wav
  * The file lands in the app's external files directory; results go to logcat
- * under AppletizerTest.
+ * under AppletizerTest. With --es download PACK_KEY instead, it downloads and
+ * installs that voice pack and reports when it is in place.
  */
 public class SelfTestActivity extends Activity {
     private static final String TAG = "AppletizerTest";
@@ -27,6 +28,11 @@ public class SelfTestActivity extends Activity {
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
+        String download = getIntent().getStringExtra("download");
+        if (download != null) {
+            download(download);
+            return;
+        }
         String voice = getIntent().getStringExtra("voice");
         String text = getIntent().getStringExtra("text");
         String out = getIntent().getStringExtra("out");
@@ -83,6 +89,34 @@ public class SelfTestActivity extends Activity {
             started = SystemClock.elapsedRealtime();
             tts.synthesizeToFile(text, null, file, "selftest");
         }, getPackageName());
+    }
+
+    private void download(String key) {
+        VoiceStore store = VoiceStore.get(this);
+        VoiceStore.Pack p = store.pack(key);
+        if (p == null) {
+            Log.e(TAG, "FAIL no pack " + key);
+            finish();
+            return;
+        }
+        startForegroundService(new android.content.Intent(this, DownloadService.class)
+                .putExtra(DownloadService.EXTRA_PACK, key));
+        started = SystemClock.elapsedRealtime();
+        new Thread(() -> {
+            while (true) {
+                SystemClock.sleep(500);
+                DownloadService.State s = DownloadService.state(p);
+                if (s == null && store.installed(p)) {
+                    Log.i(TAG, "DONE download " + key + " in " + (SystemClock.elapsedRealtime() - started) + "ms");
+                    break;
+                }
+                if (s != null && s.phase == DownloadService.Phase.FAILED) {
+                    Log.e(TAG, "FAIL download " + key + ": " + s.error);
+                    break;
+                }
+            }
+            runOnUiThread(this::finish);
+        }).start();
     }
 
     @Override

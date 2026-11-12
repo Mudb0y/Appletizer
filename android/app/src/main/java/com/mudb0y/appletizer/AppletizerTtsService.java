@@ -31,7 +31,6 @@ public class AppletizerTtsService extends TextToSpeechService {
     public void onCreate() {
         store = VoiceStore.get(this);
         super.onCreate();
-        new Thread(store::ensureAllCompact, "appletizer-unpack").start();
     }
 
     @Override
@@ -90,7 +89,8 @@ public class AppletizerTtsService extends TextToSpeechService {
     @Override
     public String onGetDefaultVoiceNameFor(String lang, String country, String variant) {
         Object[] m = store.match(lang, country);
-        return m == null ? null : store.best((String) m[0]).id();
+        VoiceStore.Voice v = m == null ? null : store.best((String) m[0]);
+        return v == null ? null : v.id();
     }
 
     @Override
@@ -109,6 +109,10 @@ public class AppletizerTtsService extends TextToSpeechService {
                 return;
             }
             v = store.best((String) m[0]);
+            if (v == null) {
+                cb.error(TextToSpeech.ERROR_INVALID_REQUEST);
+                return;
+            }
         }
         Engine e;
         try {
@@ -154,9 +158,8 @@ public class AppletizerTtsService extends TextToSpeechService {
         synchronized (engines) {
             Engine e = engines.get(v.id());
             if (e != null) return e;
-            if (v.premium) store.ensureCommon();
-            else store.ensureCompact(v.language);
-            e = new Engine(v.engine(), v.dir, store.commonDir());
+            store.prepare(v);
+            e = new Engine(v.engine(), v.dir, store.commonDir(v.gen));
             engines.put(v.id(), e);
             Iterator<Map.Entry<String, Engine>> it = engines.entrySet().iterator();
             while (engines.size() > CACHED_ENGINES && it.hasNext()) {
