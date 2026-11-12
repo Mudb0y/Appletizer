@@ -113,6 +113,7 @@ jobs:
               --rawfile notes notes.txt \
               '{code: $code, name: $name, url: $url, size: $size, sha256: $sha256,
                 notes: ($notes | split("\n") | map(select(length > 0)))}' > update.json
+          sed 's/^/- /' notes.txt > release-notes.md
           cat update.json
 
       - uses: actions/upload-artifact@v7
@@ -124,7 +125,7 @@ jobs:
         if: steps.key.outputs.signed == 'true' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "$APK" update.json --verify-tag --title "Appletizer $APPLETIZER_VERSION_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" "$APK" update.json --verify-tag --title "Appletizer $APPLETIZER_VERSION_NAME" --notes-file release-notes.md
 
       - name: Development build
         if: steps.key.outputs.signed == 'true' && github.ref == 'refs/heads/main'
