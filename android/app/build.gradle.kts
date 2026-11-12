@@ -1,6 +1,14 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
 }
+
+// One key signs every build when it is available, so CI builds and local
+// builds install over each other. CI writes this file from repository secrets.
+val signingFile = file(System.getenv("APPLETIZER_SIGNING")
+    ?: "${System.getProperty("user.home")}/.local/share/appletizer/signing.properties")
+val signing = if (signingFile.isFile) Properties().apply { signingFile.inputStream().use { load(it) } } else null
 
 android {
     namespace = "com.mudb0y.appletizer"
@@ -13,8 +21,8 @@ android {
         applicationId = "com.mudb0y.appletizer"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = System.getenv("APPLETIZER_VERSION_CODE")?.toInt() ?: 1
+        versionName = System.getenv("APPLETIZER_VERSION_NAME") ?: "0.1.0"
         // The engine is arm64 code; nothing else can run it.
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {
@@ -38,10 +46,23 @@ android {
         noCompress += listOf("dat", "hdr", "txt")
     }
 
+    signingConfigs {
+        if (signing != null) create("appletizer") {
+            storeFile = signingFile.parentFile.resolve(signing.getProperty("storeFile"))
+            storePassword = signing.getProperty("storePassword")
+            keyAlias = signing.getProperty("keyAlias")
+            keyPassword = signing.getProperty("keyPassword")
+        }
+    }
+
     buildTypes {
+        val key = signingConfigs.findByName("appletizer") ?: signingConfigs.getByName("debug")
+        debug {
+            signingConfig = key
+        }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = key
         }
     }
 

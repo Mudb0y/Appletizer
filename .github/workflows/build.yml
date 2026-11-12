@@ -1,0 +1,110 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The version code is the commit count, and dev builds name the last tag.
+          fetch-depth: 0
+
+      - name: Make room
+        # The firmware passes through about 4.5 GB of scratch space, and the
+        # Nix store holds its own Android SDK, so the runner's copy can go.
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: Cache firmware
+        uses: actions/cache@v6
+        with:
+          path: work/ipsw/iPhone6,1_7.1.2/rootfs
+          key: firmware-${{ hashFiles('scripts/fetch-firmware.sh') }}
+
+      - name: Cache Gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('android/**/*.kts', 'android/gradle.properties') }}
+
+      - name: Fetch firmware
+        run: nix develop --command scripts/fetch-firmware.sh
+
+      - name: Smoke test
+        run: nix develop --command scripts/smoke-test.sh
+
+      - name: Version
+        run: |
+          count=$(git rev-list --count HEAD)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+              name=${GITHUB_REF_NAME#v}
+              file=Appletizer-$name.apk
+          else
+              last=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo v0.1.0)
+              name=${last#v}-dev.$count+$(git rev-parse --short HEAD)
+              file=Appletizer-dev.apk
+          fi
+          echo "APPLETIZER_VERSION_CODE=$count" >> "$GITHUB_ENV"
+          echo "APPLETIZER_VERSION_NAME=$name" >> "$GITHUB_ENV"
+          echo "APK=$file" >> "$GITHUB_ENV"
+          echo "Version $name, code $count"
+
+      - name: Signing key
+        id: key
+        env:
+          KEYSTORE: ${{ secrets.APPLETIZER_KEYSTORE }}
+          PROPERTIES: ${{ secrets.APPLETIZER_SIGNING_PROPERTIES }}
+        run: |
+          if [ -z "$KEYSTORE" ] || [ -z "$PROPERTIES" ]; then
+              echo "::warning::No signing secrets; building with a throwaway key and not publishing."
+              exit 0
+          fi
+          dir=$RUNNER_TEMP/signing
+          mkdir -p "$dir"
+          base64 -d <<< "$KEYSTORE" > "$dir/release.jks"
+          printf '%s\n' "$PROPERTIES" > "$dir/signing.properties"
+          echo "APPLETIZER_SIGNING=$dir/signing.properties" >> "$GITHUB_ENV"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build APK
+        run: |
+          nix develop --command scripts/stage-android.sh
+          nix develop --command bash -c 'cd android && gradle --no-daemon --console=plain assembleRelease'
+          mv android/app/build/outputs/apk/release/app-release.apk "$APK"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APK }}
+          path: ${{ env.APK }}
+
+      - name: Release
+        if: steps.key.outputs.signed == 'true' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "$APK" --verify-tag --title "Appletizer $APPLETIZER_VERSION_NAME" --generate-notes
+
+      - name: Development build
+        if: steps.key.outputs.signed == 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete dev --yes --cleanup-tag 2> /dev/null || true
+          gh release create dev "$APK" --prerelease --target "$GITHUB_SHA" \
+              --title "Development build $APPLETIZER_VERSION_NAME" \
+              --notes "Built from main at $(git rev-parse --short HEAD): $(git log -1 --format=%s). It installs over any earlier development build or tagged release."
