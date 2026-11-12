@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 15 otherwise draws the screens under the status and title
+         bars, hiding the first rows of every list. -->
+    <style name="Theme.Appletizer" parent="android:Theme.DeviceDefault.Light.DarkActionBar">
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+</resources>

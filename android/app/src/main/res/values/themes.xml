@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The theme Android picks for an app that names none. -->
+    <style name="Theme.Appletizer" parent="android:Theme.DeviceDefault.Light.DarkActionBar" />
+</resources>
