@@ -129,8 +129,10 @@ final class VoiceStore {
             }
         }
 
+        /** Siri voices come as separate compact and premium packs, so a lone voice's footprint is part of its key. */
         String key() {
-            return gen.id + "-" + language + "-" + name.toLowerCase(Locale.ROOT);
+            String k = gen.id + "-" + language + "-" + name.toLowerCase(Locale.ROOT);
+            return folders.length == 1 ? k + (premium[0] ? "-premium" : "-compact") : k;
         }
 
         int megabytes() {
@@ -254,7 +256,7 @@ final class VoiceStore {
     }
 
     File packDir(Pack p) {
-        return new File(root, p.gen.id + "/packs/" + p.language + "-" + p.name.toLowerCase(Locale.ROOT));
+        return new File(root, p.gen.id + "/packs/" + p.key().substring(p.gen.id.length() + 1));
     }
 
     boolean installed(Pack p) {

@@ -1,11 +1,13 @@
 """Write the downloadable voices from Apple's MobileAsset catalogs as the JSON
 the app reads, each tagged with the engine its data runs on.
-Usage: make-catalog.py VOCALIZER.xml COMBINED.xml OUT.json
+Usage: make-catalog.py VOCALIZER.xml COMBINED.xml CUSTOMVOICE.xml OUT.json
 
   vauto  VoiceServicesVocalizerVoice FormatVersion 4: iOS 6's premium voices
   ve131  FormatVersion 5: iOS 7.1's premium voices
+         CustomVoice compatibility 3: iOS 8.2's Siri voices
   ve151  FormatVersion 7, compatibility 6: what iOS 9.3 to 15 download
          CombinedVocalizerVoices: the further voices iOS 10 to 15 offer
+         CustomVoice compatibility 5: iOS 10's Siri voices
 
 Names come from each pack's own broker header, read with HTTP range requests:
 the catalogs name only the newer entries, and some voices were renamed or
@@ -92,6 +94,7 @@ def entry(engine, a, lang):
 
 vocalizer = plistlib.load(open(sys.argv[1], "rb"))["Assets"]
 combined = plistlib.load(open(sys.argv[2], "rb"))["Assets"]
+custom = plistlib.load(open(sys.argv[3], "rb"))["Assets"]
 packs = []
 for a in vocalizer:
     if a.get("FormatVersion") == "4":
@@ -102,6 +105,10 @@ for a in vocalizer:
         packs.append(entry("ve151", a, a["Languages"][0]))
 for a in combined:
     packs.append(entry("ve151", a, a["Languages"][0]))
+for a in custom:
+    engine = {"3": "ve131", "5": "ve151"}.get(str(a.get("_CompatibilityVersion")))
+    if engine:
+        packs.append(entry(engine, a, a["Languages"][0]))
 packs.sort(key=lambda p: (p["language"], p["engine"], p["name"]))
-json.dump({"packs": packs}, open(sys.argv[3], "w"), indent=1, ensure_ascii=False)
+json.dump({"packs": packs}, open(sys.argv[4], "w"), indent=1, ensure_ascii=False)
 print(f"make-catalog: {len(packs)} packs")

@@ -209,7 +209,8 @@ public class DownloadService extends Service {
     /**
      * Like iOS: everything below AssetData/<pack>/ keeps its place, so a pack
      * holding a compact and a premium voice keeps them in their own folders,
-     * and broker.hdr.asset loses its suffix.
+     * and broker.hdr.asset loses its suffix. Siri packs keep their files
+     * straight in AssetData/.
      */
     private void install(VoiceStore.Pack p, File zip) throws IOException {
         File dest = store.packDir(p);
@@ -220,12 +221,12 @@ public class DownloadService extends Service {
             byte[] buf = new byte[1 << 16];
             for (ZipEntry e; (e = z.getNextEntry()) != null; ) {
                 String[] parts = e.getName().split("/");
-                if (e.isDirectory() || parts.length < 3 || !parts[0].equals("AssetData")) continue;
+                if (e.isDirectory() || parts.length < 2 || !parts[0].equals("AssetData")) continue;
                 String name = parts[parts.length - 1];
                 if (name.endsWith(".plist") || name.contains("..")) continue;
                 if (name.equals("broker.hdr.asset")) name = "broker.hdr";
                 File dir = tmp;
-                for (int i = 2; i < parts.length - 1; i++) {
+                for (int i = parts.length > 2 ? 2 : 1; i < parts.length - 1; i++) {
                     if (parts[i].equals("..")) throw new IOException("the pack has a bad path");
                     dir = new File(dir, parts[i]);
                 }
