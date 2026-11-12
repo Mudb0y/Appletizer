@@ -1,5 +1,9 @@
 """Flatten a 32-bit ARM Mach-O engine into the image the emulation bridge loads.
-Usage: armv7-image.py VOICED OUT.bin
+Usage: armv7-image.py VOICED OUT.bin [NAME=ADDRESS...]
+
+Entry points are named without their API prefix (ttsInitialize for both
+vauto_ttsInitialize and vmobile_ttsInitialize). A stripped engine's entry
+points are given as NAME=ADDRESS, Thumb functions all.
 
 Layout, all little-endian:
   "ATZG", u32 1
@@ -30,11 +34,15 @@ for slot, name in binds:
     out.append(struct.pack("<IH", slot, len(n)) + n)
 
 # Thumb functions carry bit 0 in the symbol table's n_desc, not in the value.
-api = []
+api = {}
 for s in b.symbols:
     if s.name.startswith(("_vauto_tts", "_vmobile_tts")) and s.value:
         thumb = 1 if s.description & 0x8 else 0
-        api.append((s.value | thumb, s.name))
+        api[s.name.split("_", 2)[2]] = s.value | thumb
+for kv in sys.argv[3:]:
+    name, addr = kv.split("=")
+    api[name] = int(addr, 0) | 1
+api = sorted((addr, name) for name, addr in api.items())
 out.append(struct.pack("<I", len(api)))
 for addr, name in api:
     n = name.encode()

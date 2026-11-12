@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fetch the pieces the build takes from Apple into work/firmware, each checked
 # against pinned hashes. Run inside `nix develop`; parts already in place stay.
+#   ios4   iOS 4.3.5, iPhone3,1: voiced (32-bit vmobile_tts) and its built-in voices
 #   ios6   iOS 6.1.4, iPhone5,2: voiced (32-bit vauto_tts) and its built-in voices
 #   ios7   iOS 7.1.2, iPhone6,1: voiced (VE 1.3.1) and its built-in voices
 #   ios10  iOS 10.3.3, iPhone9,1: TTSSpeechBundle, the VE 1.5.1 engine
@@ -31,6 +32,22 @@ place() {
     rm -rf "$tmp"/*
     echo "fetch-firmware: $fw/$1"
 }
+
+if [ "$(file_hash "$fw/ios4/voiced")" != 92c1cd631c95e2775f9d117cae776e88377ae66fcf7de8638a47abbc416155e1 ] ||
+   [ "$(tree_hash "$fw/ios4/TTSResources")" != c683971b0ae8cc8fa71c9a05243853c9fc1c52777f9f3aa9b755f2f3c8d26db3 ]; then
+    echo "fetch-firmware: downloading iOS 4.3.5"
+    rootfs https://secure-appldnld.apple.com/iPhone4/041-1966.20110721.V3Ufe/iPhone3,1_4.3.5_8L1_Restore.ipsw 038-2288-002.dmg
+    dmg extract "$tmp/rootfs.dmg" "$tmp/rootfs.img" \
+        -k e5e061077217c4937e14d9c4ae1eeb8d69827aa4838168033dd5f1806ab485306a8aa3cf > /dev/null
+    rm "$tmp/rootfs.dmg"
+    7zz x -y -snl -bso0 -bsp0 -o"$tmp/x" "$tmp/rootfs.img" "Durango8L1.N90OS/$vs/*" 2> /dev/null || true
+    mkdir "$tmp/out"
+    mv "$tmp/x/Durango8L1.N90OS/$vs/Support/voiced" "$tmp/x/Durango8L1.N90OS/$vs/TTSResources" "$tmp/out/"
+    [ "$(file_hash "$tmp/out/voiced")" = 92c1cd631c95e2775f9d117cae776e88377ae66fcf7de8638a47abbc416155e1 ] &&
+    [ "$(tree_hash "$tmp/out/TTSResources")" = c683971b0ae8cc8fa71c9a05243853c9fc1c52777f9f3aa9b755f2f3c8d26db3 ] ||
+        { echo "fetch-firmware: iOS 4.3.5 files do not match the pinned hashes" >&2; exit 1; }
+    place ios4
+fi
 
 if [ "$(file_hash "$fw/ios6/voiced")" != 7718ebca2ed064e573f1d2bbc145d825f3f734f13fe18c0f368b8d77f1f3024e ] ||
    [ "$(tree_hash "$fw/ios6/TTSResources")" != f7453a0a7fe6514d82b3aba031e7844c29d5d1bd789b5995a8804bbb288ea263 ]; then

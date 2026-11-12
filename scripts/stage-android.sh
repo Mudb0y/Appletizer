@@ -10,7 +10,7 @@ assets=$root/android/app/src/main/assets/voices
 "$root/scripts/build-engine.sh" android-arm64
 
 rm -rf "$assets"
-for pair in vauto:ios6 ve131:ios7 ve151:ios15; do
+for pair in vmobile:ios4 vauto:ios6 ve131:ios7 ve151:ios15; do
     gen=${pair%%:*} tts=$fw/${pair#*:}/TTSResources
     mkdir -p "$assets/$gen"
     for dir in "$tts"/*/; do

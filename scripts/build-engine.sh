@@ -46,14 +46,9 @@ if [ "$target" = linux-arm64 ]; then
         -Wl,-rpath,'$ORIGIN' -ldl -lpthread
 fi
 
-# The iOS 5/6 engine is 32-bit ARM, which arm64-only phones cannot run, so
-# libvauto.so carries it as an image and runs it inside dynarmic.
-echo "build-engine: building libvauto.so for $target"
-"$M2E_PYTHON" -I "$root/scripts/armv7-image.py" "$fw/ios6/voiced" "$out/vauto.img" > /dev/null
-bridge=("$root/native/vauto/bridge.cpp" -x assembler-with-cpp "-DIMAGE=\"$out/vauto.img\""
-        "$root/native/vauto/image.S" -x none)
-case $target in
-android-arm64)
+# The iOS 3 to 6 engines are 32-bit ARM, which arm64-only phones cannot run,
+# so each bridge library carries one as an image and runs it inside dynarmic.
+if [ "$target" = android-arm64 ]; then
     # Kept between builds, since dynarmic takes minutes; rebuilt when its source changes.
     dyn=$root/work/build/dynarmic-android
     cm=$ANDROID_HOME/cmake/3.22.1/bin
@@ -71,22 +66,44 @@ android-arm64)
             { tail -20 "$out/dynarmic.log" >&2; exit 1; }
         echo "$DYNARMIC_SRC" > "$dyn/.source"
     fi
-    # Only atzb_* is exported; the static C++ runtime and dynarmic stay private.
-    "$ndk_bin/aarch64-linux-android26-clang++" -std=c++20 -O2 -fPIC -shared -Wall -Wextra \
-        -I"$root/native" -I"$DYNARMIC_SRC/src" -I"$DYNARMIC_SRC/externals/mcl/include" -I"$BOOST_INCLUDE" \
-        "${bridge[@]}" "$dyn/src/dynarmic/libdynarmic.a" "$dyn/externals/mcl/src/libmcl.a" \
-        "$dyn/externals/fmt/libfmt.a" -static-libstdc++ \
-        -Wl,--version-script="$root/native/vauto/exports.map" -Wl,--gc-sections \
-        -Wl,-z,max-page-size=16384 -Wl,-s -o "$libs/libvauto.so"
-    ;;
-linux-arm64)
-    # Tested on this machine's own architecture, where nixpkgs builds dynarmic.
-    mkdir -p "$out/host"
-    c++ -std=c++20 -O2 -fPIC -shared -Wall -Wextra -I"$root/native" -I"$HOST_DYNARMIC/include" \
-        "${bridge[@]}" -L"$HOST_DYNARMIC/lib" -ldynarmic -Wl,-rpath,"$HOST_DYNARMIC/lib" \
-        -o "$out/host/libvauto.so"
+fi
+
+# bridge LIB VOICED [ENTRY=ADDRESS...]
+bridge() {
+    local lib=$1 voiced=$2 img=$out/${1%.so}.img
+    shift 2
+    echo "build-engine: building $lib for $target"
+    [ -f "$voiced" ] || { echo "build-engine: no $voiced; run fetch-firmware.sh" >&2; exit 1; }
+    "$M2E_PYTHON" -I "$root/scripts/armv7-image.py" "$voiced" "$img" "$@" > /dev/null
+    local src=("$root/native/vauto/bridge.cpp" -x assembler-with-cpp "-DIMAGE=\"$img\""
+               "$root/native/vauto/image.S" -x none)
+    case $target in
+    android-arm64)
+        # Only atzb_* is exported; the static C++ runtime and dynarmic stay private.
+        "$ndk_bin/aarch64-linux-android26-clang++" -std=c++20 -O2 -fPIC -shared -Wall -Wextra \
+            -I"$root/native" -I"$DYNARMIC_SRC/src" -I"$DYNARMIC_SRC/externals/mcl/include" -I"$BOOST_INCLUDE" \
+            "${src[@]}" "$dyn/src/dynarmic/libdynarmic.a" "$dyn/externals/mcl/src/libmcl.a" \
+            "$dyn/externals/fmt/libfmt.a" -static-libstdc++ \
+            -Wl,--version-script="$root/native/vauto/exports.map" -Wl,--gc-sections \
+            -Wl,-z,max-page-size=16384 -Wl,-s -o "$libs/$lib" ;;
+    linux-arm64)
+        # Tested on this machine's own architecture, where nixpkgs builds dynarmic.
+        mkdir -p "$out/host"
+        c++ -std=c++20 -O2 -fPIC -shared -Wall -Wextra -I"$root/native" -I"$HOST_DYNARMIC/include" \
+            "${src[@]}" -L"$HOST_DYNARMIC/lib" -ldynarmic -Wl,-rpath,"$HOST_DYNARMIC/lib" \
+            -o "$out/host/$lib" ;;
+    esac
+}
+
+# iOS 5 and 6: Vocalizer for Automotive, symbols intact.
+bridge libvauto.so "$fw/ios6/voiced"
+# iOS 3 and 4: Vocalizer for Mobile, stripped; its entry points were found by
+# the API's own log strings and the "SLCs" handle magic.
+bridge libvmobile.so "$fw/ios4/voiced" ttsInitialize=0xc9618 ttsOpen=0xc90f0 \
+    ttsSetParamList=0xca98c ttsSetOutDevice=0xc83b0 ttsProcessText2Speech=0xca738 ttsStop=0xc86f8
+
+if [ "$target" = linux-arm64 ]; then
     cc -O2 -Wall -Wextra -o "$out/host/vesay" "$root/native/vesay.c" "$root/native/engine.c" \
         -Wl,-rpath,'$ORIGIN' -ldl -lpthread
-    ;;
-esac
+fi
 echo "build-engine: $(ls "$libs"/*.so | tr '\n' ' ')"

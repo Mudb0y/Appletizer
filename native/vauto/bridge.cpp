@@ -1,6 +1,7 @@
-// The iOS 5 and 6 Nuance engine (Vocalizer for Automotive, vauto_tts) exists
-// only as 32-bit ARM code, which arm64-only phones cannot execute, so it runs
-// here inside dynarmic. Its library imports and platform interfaces are
+// The iOS 3 to 6 Nuance engines (Vocalizer for Mobile, vmobile_tts, and its
+// successor Vocalizer for Automotive, vauto_tts) exist only as 32-bit ARM
+// code, which arm64-only phones cannot execute, so they run here inside
+// dynarmic. Both take the same install structure and calls. Its library imports and platform interfaces are
 // served from the host through SVC trampolines.
 #include "bridge.h"
 
@@ -374,6 +375,40 @@ void atzb::install_libc(const std::string &name, u32 slot) {
         fn = [&G] { u32 d = G.arg(0); std::strcpy(reinterpret_cast<char *>(G.host(d)), G.str(G.arg(1))); G.ret(d); };
     else if (n("_strncpy") || n("___strncpy_chk"))
         fn = [&G] { u32 d = G.arg(0); std::strncpy(reinterpret_cast<char *>(G.host(d)), G.str(G.arg(1)), G.arg(2)); G.ret(d); };
+    else if (n("_strncat") || n("___strncat_chk"))
+        fn = [&G] { u32 d = G.arg(0); std::strncat(reinterpret_cast<char *>(G.host(d)), G.str(G.arg(1)), G.arg(2)); G.ret(d); };
+    else if (n("_strpbrk") || n("_strspn") || n("_strcspn"))
+        fn = [&G, which = name] {
+            u32 s = G.arg(0);
+            const char *h = G.str(s), *set = G.str(G.arg(1));
+            if (which == "_strspn") { G.ret(static_cast<u32>(std::strspn(h, set))); return; }
+            if (which == "_strcspn") { G.ret(static_cast<u32>(std::strcspn(h, set))); return; }
+            const char *f = std::strpbrk(h, set);
+            G.ret(f ? s + static_cast<u32>(f - h) : 0);
+        };
+    else if (n("_memchr"))
+        fn = [&G] {
+            u32 s = G.arg(0);
+            const void *f = std::memchr(G.host(s), static_cast<int>(G.arg(1)), G.arg(2));
+            G.ret(f ? s + static_cast<u32>(static_cast<const u8 *>(f) - G.host(s)) : 0);
+        };
+    else if (n("_strtol") || n("_strtoul") || n("_atoi") || n("_atol"))
+        fn = [&G, which = name] {
+            u32 s = G.arg(0);
+            char *end = nullptr;
+            const char *h = G.str(s);
+            long v = which == "_strtoul" ? static_cast<long>(std::strtoul(h, &end, static_cast<int>(G.arg(2))))
+                   : which == "_strtol" ? std::strtol(h, &end, static_cast<int>(G.arg(2)))
+                   : std::strtol(h, nullptr, 10);
+            if ((which == "_strtol" || which == "_strtoul") && G.arg(1))
+                G.wr32(G.arg(1), s + static_cast<u32>(end - h));
+            G.ret(static_cast<u32>(v));
+        };
+    else if (n("___tolower") || n("_tolower") || n("___toupper") || n("_toupper"))
+        fn = [&G, up = n("___toupper") || n("_toupper")] {
+            u32 c = G.arg(0);
+            G.ret(up ? (c >= 'a' && c <= 'z' ? c - 32 : c) : (c >= 'A' && c <= 'Z' ? c + 32 : c));
+        };
     else if (n("_strcat") || n("___strcat_chk"))
         fn = [&G] { u32 d = G.arg(0); std::strcat(reinterpret_cast<char *>(G.host(d)), G.str(G.arg(1))); G.ret(d); };
     else if (n("_strchr") || n("_strrchr"))
@@ -690,8 +725,7 @@ extern "C" atzb *atzb_open(const char *voice_dir, const char *common_dir, atz_vo
     G.wr32(TRAMP, 0xef000000 | SVC_STOP);
     G.wr32(TRAMP + 4, 0xe12fff1e);
     if (!b->load_image(err, errlen)) return nullptr;
-    for (const char *f : {"_vauto_ttsInitialize", "_vauto_ttsOpen", "_vauto_ttsSetParamList",
-                          "_vauto_ttsSetOutDevice", "_vauto_ttsProcessText2Speech"})
+    for (const char *f : {"ttsInitialize", "ttsOpen", "ttsSetParamList", "ttsSetOutDevice", "ttsProcessText2Speech"})
         if (!b->api.count(f)) {
             snprintf(err, errlen, "engine image lacks %s", f);
             return nullptr;
@@ -726,9 +760,9 @@ extern "C" atzb *atzb_open(const char *voice_dir, const char *common_dir, atz_vo
     G.wr32(install + 4, broker);
 
     u32 speech = G.zalloc(8), inst = G.zalloc(8);
-    u32 rc = G.call(b->api["_vauto_ttsInitialize"], {install, speech});
+    u32 rc = G.call(b->api["ttsInitialize"], {install, speech});
     if (rc == 0)
-        rc = G.call(b->api["_vauto_ttsOpen"], {G.rd32(speech), G.rd32(speech + 4), 0, 0}, {inst, 0});
+        rc = G.call(b->api["ttsOpen"], {G.rd32(speech), G.rd32(speech + 4), 0, 0}, {inst, 0});
     if (rc) {
         snprintf(err, errlen, "starting the engine: %s", G.error.empty() ? std::to_string(rc).c_str() : G.error.c_str());
         return nullptr;
@@ -736,13 +770,13 @@ extern "C" atzb *atzb_open(const char *voice_dir, const char *common_dir, atz_vo
     b->instance[0] = G.rd32(inst);
     b->instance[1] = G.rd32(inst + 4);
     u32 list = b->params({{7, language}, {8, voice}}, {{1, static_cast<u16>(rate / 1000)}, {12, 1}});
-    rc = G.call(b->api["_vauto_ttsSetParamList"], {b->instance[0], b->instance[1], list, 4});
+    rc = G.call(b->api["ttsSetParamList"], {b->instance[0], b->instance[1], list, 4});
     if (rc) {
         snprintf(err, errlen, "setting language and voice: %#x %s", rc, G.error.c_str());
         return nullptr;
     }
     if (!model.empty()) {
-        rc = G.call(b->api["_vauto_ttsSetParamList"], {b->instance[0], b->instance[1], b->params({{19, model}}, {}), 1});
+        rc = G.call(b->api["ttsSetParamList"], {b->instance[0], b->instance[1], b->params({{19, model}}, {}), 1});
         if (rc) G.logf("setting voice model %s: %#x", model.c_str(), rc);
     }
 
@@ -777,7 +811,7 @@ extern "C" atzb *atzb_open(const char *voice_dir, const char *common_dir, atz_vo
     });
     u32 dev = G.zalloc(8);
     G.wr32(dev + 4, notify);
-    rc = G.call(b->api["_vauto_ttsSetOutDevice"], {b->instance[0], b->instance[1], dev});
+    rc = G.call(b->api["ttsSetOutDevice"], {b->instance[0], b->instance[1], dev});
     if (rc) {
         snprintf(err, errlen, "setting the output: %#x %s", rc, G.error.c_str());
         return nullptr;
@@ -793,13 +827,13 @@ extern "C" int atzb_set_prosody(atzb *b, int rate, int pitch) {
     u32 rc = 0;
     if (r != b->rate) {
         u32 list = b->params({}, {{3, r}});
-        rc = b->g.call(b->api["_vauto_ttsSetParamList"], {b->instance[0], b->instance[1], list, 1});
+        rc = b->g.call(b->api["ttsSetParamList"], {b->instance[0], b->instance[1], list, 1});
         b->g.release(list);
         if (!rc) b->rate = r;
     }
     if (p != b->pitch) {
         u32 list = b->params({}, {{4, p}});
-        b->g.call(b->api["_vauto_ttsSetParamList"], {b->instance[0], b->instance[1], list, 1});
+        b->g.call(b->api["ttsSetParamList"], {b->instance[0], b->instance[1], list, 1});
         b->g.release(list);
         b->pitch = p;
     }
@@ -820,7 +854,7 @@ extern "C" uint32_t atzb_speak(atzb *b, const uint16_t *text, size_t len,
     b->on_word = on_word;
     b->user = user;
     b->stopping = false;
-    u32 rc = G.call(b->api["_vauto_ttsProcessText2Speech"], {b->instance[0], b->instance[1], in});
+    u32 rc = G.call(b->api["ttsProcessText2Speech"], {b->instance[0], b->instance[1], in});
     b->on_pcm = nullptr;
     b->on_word = nullptr;
     G.release(buf);
