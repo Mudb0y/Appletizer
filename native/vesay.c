@@ -70,10 +70,11 @@ static size_t utf16(const char *s, uint16_t *out) {
 }
 
 int main(int argc, char **argv) {
-    const char *voice = NULL, *common = NULL, *out = "out.wav", *text = NULL;
+    const char *engine = "libvoiced.so", *voice = NULL, *common = NULL, *out = "out.wav", *text = NULL;
     int rate = 100, pitch = 100, verbose = 0;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-v") && i + 1 < argc) voice = argv[++i];
+        if (!strcmp(argv[i], "-e") && i + 1 < argc) engine = argv[++i];
+        else if (!strcmp(argv[i], "-v") && i + 1 < argc) voice = argv[++i];
         else if (!strcmp(argv[i], "-c") && i + 1 < argc) common = argv[++i];
         else if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
         else if (!strcmp(argv[i], "-r") && i + 1 < argc) rate = atoi(argv[++i]);
@@ -82,14 +83,14 @@ int main(int argc, char **argv) {
         else text = argv[i];
     }
     if (!voice || !text) {
-        fprintf(stderr, "usage: vesay -v VOICEDIR [-c COMMONDIR] [-o OUT.wav] [-r RATE] [-p PITCH] [-V] TEXT\n");
+        fprintf(stderr, "usage: vesay [-e ENGINE.so] -v VOICEDIR [-c COMMONDIR] [-o OUT.wav] [-r RATE] [-p PITCH] [-V] TEXT\n");
         return 2;
     }
 
     char err[512] = "";
     struct timespec t0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    atz_engine *e = atz_open(voice, common, err, sizeof err);
+    atz_engine *e = atz_open(engine, voice, common, err, sizeof err);
     if (!e) {
         fprintf(stderr, "vesay: %s\n", err);
         return 1;

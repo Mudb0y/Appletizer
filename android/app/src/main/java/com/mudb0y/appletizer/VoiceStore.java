@@ -48,6 +48,11 @@ final class VoiceStore {
             return Locale.forLanguageTag(language);
         }
 
+        /** The converted engine library this voice's data runs on. */
+        String engine() {
+            return "libvoiced.so";
+        }
+
         /** The language's own name for itself, then the voice's name. */
         String sampleText() {
             Locale loc = locale();

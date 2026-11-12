@@ -23,9 +23,10 @@ final class Engine implements AutoCloseable {
     final int sampleRate;
     private long handle;
 
-    Engine(File voiceDir, File commonDir) throws IOException {
+    /** library is the converted engine to run the voice on, by file name. */
+    Engine(String library, File voiceDir, File commonDir) throws IOException {
         String[] info = new String[4];
-        handle = open(voiceDir.getPath(), commonDir.getPath(), info);
+        handle = open(library, voiceDir.getPath(), commonDir.getPath(), info);
         voice = info[0];
         language = info[1];
         model = info[2];
@@ -50,7 +51,8 @@ final class Engine implements AutoCloseable {
         }
     }
 
-    private static native long open(String voiceDir, String commonDir, String[] info) throws IOException;
+    private static native long open(String library, String voiceDir, String commonDir, String[] info)
+            throws IOException;
 
     private static native int speak(long handle, String text, int rate, int pitch, Sink sink);
 

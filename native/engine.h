@@ -22,10 +22,12 @@ typedef void (*atz_log_cb)(const char *msg);
 void atz_set_log(atz_log_cb log);
 
 /*
- * voice_dir holds broker.hdr and the voice's .dat files; common_dir holds the
- * language-independent ones (lid.dat). Either may be shared between engines.
+ * engine is the converted engine library to run the voice on, as dlopen takes
+ * it. voice_dir holds broker.hdr and the voice's .dat files; common_dir holds
+ * the language-independent ones (lid.dat). Either may be shared between engines.
  */
-atz_engine *atz_open(const char *voice_dir, const char *common_dir, char *err, size_t errlen);
+atz_engine *atz_open(const char *engine, const char *voice_dir, const char *common_dir,
+                     char *err, size_t errlen);
 const atz_voice_info *atz_info(const atz_engine *e);
 /* rate 50..400, pitch 50..200; 100 is neutral for both. */
 int atz_set_prosody(atz_engine *e, int rate, int pitch);

@@ -2,6 +2,7 @@
 #include "engine.h"
 #include "ve.h"
 
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -195,9 +196,72 @@ static ve_err mp_freeze(void *mp) { (void)mp; return VE_OK; }
 
 static const ve_mapping_if mapping_if = { mp_open, mp_close, mp_map, mp_unmap, mp_freeze };
 
+/* ---- engine libraries --------------------------------------------------------- */
+
+/* Each converted engine is its own library with the same ve_* names, so they
+ * are opened locally and called through a table rather than linked. */
+typedef struct {
+    char *path;
+    __typeof__(ve_ttsInitialize) *initialize;
+    __typeof__(ve_ttsUnInitialize) *uninitialize;
+    __typeof__(ve_ttsOpen) *open;
+    __typeof__(ve_ttsClose) *close;
+    __typeof__(ve_ttsSetParamList) *set_params;
+    __typeof__(ve_ttsSetOutDevice) *set_out_device;
+    __typeof__(ve_ttsProcessText2Speech) *speak;
+    __typeof__(ve_ttsStop) *stop;
+    __typeof__(ve_ttsResourceLoad) *load_resource;
+} ve_api;
+
+#define MAX_LIBS 8
+static ve_api libs[MAX_LIBS];
+static int nlibs;
+static pthread_mutex_t libs_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Libraries stay loaded for the life of the process. */
+static const ve_api *load_api(const char *path, char *err, size_t errlen) {
+    const ve_api *found = NULL;
+    pthread_mutex_lock(&libs_lock);
+    for (int i = 0; i < nlibs && !found; i++)
+        if (!strcmp(libs[i].path, path)) found = &libs[i];
+    if (found) goto out;
+    if (nlibs == MAX_LIBS) {
+        snprintf(err, errlen, "too many engine libraries");
+        goto out;
+    }
+    void *dl = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!dl) {
+        snprintf(err, errlen, "dlopen %s: %s", path, dlerror());
+        goto out;
+    }
+    ve_api a = { .path = strdup(path) };
+#define SYM(field, name) \
+    if (!(*(void **)&a.field = dlsym(dl, name))) { \
+        snprintf(err, errlen, "%s lacks %s", path, name); \
+        free(a.path); \
+        goto out; \
+    }
+    SYM(initialize, "ve_ttsInitialize")
+    SYM(uninitialize, "ve_ttsUnInitialize")
+    SYM(open, "ve_ttsOpen")
+    SYM(close, "ve_ttsClose")
+    SYM(set_params, "ve_ttsSetParamList")
+    SYM(set_out_device, "ve_ttsSetOutDevice")
+    SYM(speak, "ve_ttsProcessText2Speech")
+    SYM(stop, "ve_ttsStop")
+    SYM(load_resource, "ve_ttsResourceLoad")
+#undef SYM
+    libs[nlibs] = a;
+    found = &libs[nlibs++];
+out:
+    pthread_mutex_unlock(&libs_lock);
+    return found;
+}
+
 /* ---- engine ------------------------------------------------------------------ */
 
 struct atz_engine {
+    const ve_api *ve;
     data_class dc;
     char *voice_dir, *common_dir;
     char *broker;              /* broker.hdr text handed to the engine */
@@ -297,7 +361,7 @@ static void load_resource(atz_engine *e, const char *file, const char *mime, voi
     char *data = read_file(path, &len);
     if (!data) return;
     ve_handle h;
-    ve_err r = ve_ttsResourceLoad(e->instance, mime, (uint32_t)len, data, &h);
+    ve_err r = e->ve->load_resource(e->instance, mime, (uint32_t)len, data, &h);
     if (r) {
         logf_("loading %s failed: %#x", file, r);
         free(data);
@@ -307,9 +371,13 @@ static void load_resource(atz_engine *e, const char *file, const char *mime, voi
     if (keep_len) *keep_len = len;
 }
 
-atz_engine *atz_open(const char *voice_dir, const char *common_dir, char *err, size_t errlen) {
+atz_engine *atz_open(const char *engine, const char *voice_dir, const char *common_dir,
+                     char *err, size_t errlen) {
+    const ve_api *ve = load_api(engine, err, errlen);
+    if (!ve) return NULL;
     atz_engine *e = calloc(1, sizeof *e);
     if (!e) return NULL;
+    e->ve = ve;
     e->voice_dir = strdup(voice_dir);
     e->common_dir = strdup(common_dir ? common_dir : voice_dir);
     e->dc.dirs[0] = e->voice_dir;
@@ -353,15 +421,15 @@ atz_engine *atz_open(const char *voice_dir, const char *common_dir, char *err, s
         .mapping_if = &mapping_if,
         .data_class = &e->dc,
     };
-    ve_err r = ve_ttsInitialize(&inst, &e->speech);
+    ve_err r = e->ve->initialize(&inst, &e->speech);
     if (r) {
         snprintf(err, errlen, "ve_ttsInitialize: %#x", r);
         goto fail;
     }
-    r = ve_ttsOpen(e->speech, NULL, NULL, &e->instance, NULL);
+    r = e->ve->open(e->speech, NULL, NULL, &e->instance, NULL);
     if (r) {
         snprintf(err, errlen, "ve_ttsOpen: %#x", r);
-        ve_ttsUnInitialize(e->speech);
+        e->ve->uninitialize(e->speech);
         e->speech.data = NULL;
         goto fail;
     }
@@ -371,14 +439,14 @@ atz_engine *atz_open(const char *voice_dir, const char *common_dir, char *err, s
     set_string(&p[1], VE_PARAM_VOICE, e->info.voice);
     set_value(&p[2], VE_PARAM_FREQUENCY, (uint16_t)(e->info.sample_rate / 1000));
     set_value(&p[3], VE_PARAM_TYPE_OF_CHAR, 1);
-    r = ve_ttsSetParamList(e->instance, p, 4);
+    r = e->ve->set_params(e->instance, p, 4);
     if (r) {
         snprintf(err, errlen, "setting language and voice: %#x", r);
         goto fail_open;
     }
     if (e->info.model[0]) {
         set_string(&p[0], VE_PARAM_VOICE_MODEL, e->info.model);
-        r = ve_ttsSetParamList(e->instance, p, 1);
+        r = e->ve->set_params(e->instance, p, 1);
         if (r) logf_("setting voice model %s: %#x", e->info.model, r);
     }
 
@@ -387,7 +455,7 @@ atz_engine *atz_open(const char *voice_dir, const char *common_dir, char *err, s
                   &e->prompts, &e->prompts_len);
 
     ve_outdevice dev = { e, notify };
-    r = ve_ttsSetOutDevice(e->instance, &dev);
+    r = e->ve->set_out_device(e->instance, &dev);
     if (r) {
         snprintf(err, errlen, "ve_ttsSetOutDevice: %#x", r);
         goto fail_open;
@@ -395,8 +463,8 @@ atz_engine *atz_open(const char *voice_dir, const char *common_dir, char *err, s
     return e;
 
 fail_open:
-    ve_ttsClose(e->instance);
-    ve_ttsUnInitialize(e->speech);
+    e->ve->close(e->instance);
+    e->ve->uninitialize(e->speech);
     e->speech.data = NULL;
 fail:
     free(e->broker);
@@ -418,7 +486,7 @@ int atz_set_prosody(atz_engine *e, int rate, int pitch) {
     ve_param p[2];
     set_value(&p[0], VE_PARAM_SPEECHRATE, clamp(rate, 50, 400));
     set_value(&p[1], VE_PARAM_PITCH, clamp(pitch, 50, 200));
-    return (int)ve_ttsSetParamList(e->instance, p, 2);
+    return (int)e->ve->set_params(e->instance, p, 2);
 }
 
 uint32_t atz_speak(atz_engine *e, const uint16_t *text, size_t len,
@@ -436,7 +504,7 @@ uint32_t atz_speak(atz_engine *e, const uint16_t *text, size_t len,
     e->user = user;
     e->stopping = 0;
     ve_intext in = { 0, (uint32_t)(len * 2), clean };
-    ve_err r = ve_ttsProcessText2Speech(e->instance, &in);
+    ve_err r = e->ve->speak(e->instance, &in);
     free(clean);
     e->on_pcm = NULL;
     e->on_word = NULL;
@@ -446,13 +514,13 @@ uint32_t atz_speak(atz_engine *e, const uint16_t *text, size_t len,
 
 void atz_stop(atz_engine *e) {
     e->stopping = 1;
-    ve_ttsStop(e->instance);
+    e->ve->stop(e->instance);
 }
 
 void atz_close(atz_engine *e) {
     if (!e) return;
-    ve_ttsClose(e->instance);
-    ve_ttsUnInitialize(e->speech);
+    e->ve->close(e->instance);
+    e->ve->uninitialize(e->speech);
     free(e->broker);
     free(e->voice_dir);
     free(e->common_dir);

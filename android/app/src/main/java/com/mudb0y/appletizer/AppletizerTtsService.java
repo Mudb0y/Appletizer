@@ -156,7 +156,7 @@ public class AppletizerTtsService extends TextToSpeechService {
             if (e != null) return e;
             if (v.premium) store.ensureCommon();
             else store.ensureCompact(v.language);
-            e = new Engine(v.dir, store.commonDir());
+            e = new Engine(v.engine(), v.dir, store.commonDir());
             engines.put(v.id(), e);
             Iterator<Map.Entry<String, Engine>> it = engines.entrySet().iterator();
             while (engines.size() > CACHED_ENGINES && it.hasNext()) {

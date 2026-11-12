@@ -8,6 +8,11 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 voiced=${VOICED:-$root/work/ipsw/iPhone6,1_7.1.2/rootfs/Sochi11D257.N51OS/System/Library/PrivateFrameworks/VoiceServices.framework/Support/voiced}
 macho2elf=${MACHO2ELF:-$root/scripts/macho2elf.py}
 out=$root/work/build/$target
+# Gradle packages everything under jniLibs; vesay finds the engine next to it.
+case $target in
+android-arm64) lib=$out/jniLibs/arm64-v8a/libvoiced.so ;;
+*) lib=$out/libvoiced.so ;;
+esac
 ndk_bin=${ANDROID_NDK_ROOT:-}/toolchains/llvm/prebuilt/linux-x86_64/bin
 
 case $target in
@@ -18,15 +23,15 @@ esac
 
 [ -f "$voiced" ] || { echo "build-engine: no voiced at $voiced" >&2; exit 1; }
 rm -rf "$out"
-mkdir -p "$out"
+mkdir -p "$(dirname "$lib")"
 
 echo "build-engine: converting voiced for $target"
-"$M2E_PYTHON" -I "$macho2elf" "$voiced" -o "$out/libvoiced.so" --workdir "$out/m2e" \
+"$M2E_PYTHON" -I "$macho2elf" "$voiced" -o "$lib" --workdir "$out/m2e" \
     --os "$os" --cc "$cc" --skip-initializers --trap-missing --no-cxx-runtime \
     > "$out/macho2elf.log" 2>&1 || { tail -20 "$out/macho2elf.log" >&2; exit 1; }
 
 if [ "$target" = linux-arm64 ]; then
     $cc -O2 -Wall -Wextra -o "$out/vesay" "$root/native/vesay.c" "$root/native/engine.c" \
-        -L"$out" -lvoiced -Wl,-rpath,'$ORIGIN' -lpthread
+        -Wl,-rpath,'$ORIGIN' -ldl -lpthread
 fi
-echo "build-engine: $out/libvoiced.so"
+echo "build-engine: $lib"

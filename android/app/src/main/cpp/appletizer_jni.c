@@ -18,13 +18,15 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
 
 /* info[0..3] receive voice, language, model and sample rate. */
 JNIEXPORT jlong JNICALL
-Java_com_mudb0y_appletizer_Engine_open(JNIEnv *env, jclass cls, jstring voiceDir,
+Java_com_mudb0y_appletizer_Engine_open(JNIEnv *env, jclass cls, jstring library, jstring voiceDir,
                                         jstring commonDir, jobjectArray info) {
     (void)cls;
+    const char *l = (*env)->GetStringUTFChars(env, library, NULL);
     const char *v = (*env)->GetStringUTFChars(env, voiceDir, NULL);
     const char *c = (*env)->GetStringUTFChars(env, commonDir, NULL);
     char err[512] = "";
-    atz_engine *e = atz_open(v, c, err, sizeof err);
+    atz_engine *e = atz_open(l, v, c, err, sizeof err);
+    (*env)->ReleaseStringUTFChars(env, library, l);
     (*env)->ReleaseStringUTFChars(env, voiceDir, v);
     (*env)->ReleaseStringUTFChars(env, commonDir, c);
     if (!e) {

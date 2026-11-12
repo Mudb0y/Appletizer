@@ -27,12 +27,14 @@ android {
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {
             cmake {
-                arguments += "-DENGINE_DIR=${rootDir}/../work/build/android-arm64"
                 // NDK r27 still links with 4 KB segment alignment unless asked.
                 arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
             }
         }
     }
+
+    // The converted engines come from scripts/stage-android.sh, not from CMake.
+    sourceSets["main"].jniLibs.srcDir("${rootDir}/../work/build/android-arm64/jniLibs")
 
     externalNativeBuild {
         cmake {
