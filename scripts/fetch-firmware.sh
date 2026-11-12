@@ -25,6 +25,7 @@ if verify "$dest/rootfs"; then
     exit 0
 fi
 
+mkdir -p "$root/work"
 tmp=$(mktemp -d "$root/work/fetch.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 echo "fetch-firmware: downloading iOS 7.1.2 for iPhone6,1"
